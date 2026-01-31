@@ -30,11 +30,9 @@ jobs:
           docker build -t asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} .
           docker push asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
 
-      - name: Deploy to Cloud Run
+      - name: Deploy to Cloud Run Job
         run: |
-          gcloud run deploy ${{ env.SERVICE_NAME }} \
+          gcloud run jobs deploy ${{ env.SERVICE_NAME }} \
             --image asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
             --region ${{ env.REGION }} \
-            --platform managed \
-            --no-allow-unauthenticated \
             --service-account=sa-airflow-orchestrator@project-tjr104-cafe.iam.gserviceaccount.com
