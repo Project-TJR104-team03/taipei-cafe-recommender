@@ -1,5 +1,5 @@
 # 使用官方 Python 輕量版作為基礎鏡像
-FROM python:3.10-slim
+FROM python:3.11-slim
 
 # 2. 設定環境變數
 # PYTHONUNBUFFERED=1: 讓 Log 直接輸出 (你原本的設定)
