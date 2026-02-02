@@ -33,8 +33,8 @@ jobs:
       - name: Build and Push
         run: |
           DOCKER_TAG="asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
-          # 注意：路徑有數字和點
-          docker build -t $DOCKER_TAG -f 1.crawler/Dockerfile .
+          # 將建置路徑改為 ./1.crawler 這樣 COPY . . 就會抓這個資料夾內的檔案
+          docker build -t $DOCKER_TAG ./1.crawler
           docker push $DOCKER_TAG
 
       - name: Deploy Cloud Run Job
