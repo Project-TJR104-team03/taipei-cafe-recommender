@@ -34,5 +34,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # 執行主控程式，依序跑完 01, 02, 03
-CMD ["python", "src/main.py"]
+CMD ["python", "main.py"]
 
