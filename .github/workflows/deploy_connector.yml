@@ -1,0 +1,47 @@
+name: Deploy 3.Connector (Job)
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - '3.connector/**' # 監聽 3.connector 資料夾
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: project-tjr104-cafe
+  REGION: asia-east1
+  REPO_NAME: cafe-apps
+  SERVICE_NAME: cafe-connector-job
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Google Auth
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker asia-east1-docker.pkg.dev --quiet
+
+      - name: Build and Push
+        run: |
+          DOCKER_TAG="asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
+          docker build -t $DOCKER_TAG -f 3.connector/Dockerfile .
+          docker push $DOCKER_TAG
+
+      - name: Deploy Cloud Run Job
+        run: |
+          gcloud run services delete ${{ env.SERVICE_NAME }} --region ${{ env.REGION }} --quiet || true
+          
+          gcloud run jobs deploy ${{ env.SERVICE_NAME }} \
+            --image asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --task-timeout 600s \
+            --max-retries 0
