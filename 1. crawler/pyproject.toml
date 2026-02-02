@@ -1,0 +1,32 @@
+[project]
+name = "tjr104-cafe-project"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Patty",email = "apple9946007@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "pandas (>=3.0.0,<4.0.0)",
+    "selenium (>=4.40.0,<5.0.0)",
+    "webdriver-manager (>=4.0.2,<5.0.0)",
+    "google-cloud-storage (>=3.8.0,<4.0.0)",
+    "pymongo (>=4.16.0,<5.0.0)",
+    "requests (>=2.32.5,<3.0.0)",
+    "python-dotenv (>=1.2.1,<2.0.0)",
+    "googlemaps (>=4.10.0,<5.0.0)",
+    "bs4 (>=0.0.2,<0.0.3)",
+    "beautifulsoup4 (>=4.14.3,<5.0.0)",
+    "python-dateutil (>=2.9.0.post0,<3.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "ipykernel (>=7.1.0,<8.0.0)"
+]
