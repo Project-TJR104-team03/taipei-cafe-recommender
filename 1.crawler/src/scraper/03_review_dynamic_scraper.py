@@ -207,6 +207,10 @@ if __name__ == "__main__":
     REGION = os.getenv("SCAN_REGION", "A-2")
     SCAN_LIMIT = int(os.getenv("SCAN_LIMIT")) if os.getenv("SCAN_LIMIT") else None
     
+    if not BUCKET_NAME:
+        print("❌ 錯誤: 階段三找不到環境變數 GCS_BUCKET_NAME")
+        sys.exit(1)
+
     # 指向統一的總表路徑
     INPUT_BLOB = "raw/store/base.csv"  # 讀取 Step 1 整合後的總名單
     REVIEWS_TOTAL_PATH = "raw/comments/reviews_total.csv" # 評論總表

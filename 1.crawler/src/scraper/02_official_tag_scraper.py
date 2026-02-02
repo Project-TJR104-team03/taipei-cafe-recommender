@@ -80,6 +80,11 @@ if __name__ == "__main__":
     ENV_LIMIT = os.getenv("SCAN_LIMIT")
     SCAN_LIMIT = int(ENV_LIMIT) if (ENV_LIMIT and ENV_LIMIT.isdigit()) else None
 
+    # 檢查是否拿到了，沒拿到就報錯（預防雲端沒設好）
+    if not BUCKET_NAME:
+        print("❌ 錯誤: 階段二找不到環境變數 GCS_BUCKET_NAME")
+        sys.exit(1)
+
     # 定義路徑：讀取全台總表，並將標籤存入標籤總表
     BASE_CSV_PATH = "raw/store/base.csv"
     TAGS_TOTAL_PATH = "raw/tag/tags_total.csv"

@@ -181,6 +181,21 @@ if __name__ == "__main__":
     # 🌟 插入點 A：在任務開始前，讀取 GCS 現有總表 (這就是你的「黑名單」)
     print(f"🔍 正在檢查 GCS 現有資料庫...")
     # 使用我們之前寫的讀取函式 (假設你已定義 download_from_gcs_to_df)
+    SECRET_RESOURCE_NAME = os.getenv("SECRET_RESOURCE_NAME")
+    BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
+    
+    SCAN_ALL = os.getenv("SCAN_ALL", "false").lower() == "true"
+    SCAN_REGION = os.getenv("SCAN_REGION", "A-2")
+    SCAN_LIMIT_RAW = os.getenv("SCAN_LIMIT")
+    SCAN_LIMIT = int(SCAN_LIMIT_RAW) if (SCAN_LIMIT_RAW and SCAN_LIMIT_RAW.isdigit()) else None
+
+    api_key = get_secret(SECRET_RESOURCE_NAME)
+    gmaps = googlemaps.Client(key=api_key)
+
+    # 檢查變數是否存在
+    if not BUCKET_NAME:
+        print("❌ 錯誤: 缺少環境變數 GCS_BUCKET_NAME")
+        sys.exit(1)
     df_existing_base = download_from_gcs_to_df(BUCKET_NAME, "raw/store/base.csv")
     df_existing_dynamic = download_from_gcs_to_df(BUCKET_NAME, "raw/store_dynamic/store_dynamic.csv")
     
