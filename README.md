@@ -10,8 +10,7 @@
 2. **資料處理**: Cloud Functions (Gemini Pro) ➔ 向量化與標籤化
 3. **儲存引擎**: MongoDB Atlas (Vector Search + GeoJSON)
 4. **服務介面**: LINE Messaging API ➔ FastAPI (Cloud Run)
-
-![系統流程圖](./docs/FlowChart.drawio.svg)
+<img src="./docs/FlowChart.drawio.svg" width="100%">
 
 ---
 
