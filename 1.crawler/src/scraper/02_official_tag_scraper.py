@@ -145,14 +145,56 @@ if __name__ == "__main__":
             name = row.get('name')
             address = row.get('formatted_address', '')
             
-            print(f"🔍 [{index+1}/{len(df_to_process)}] 採集標籤: {name}")
+            # 🌟 關鍵 1：變數初始化 (放在搜尋前，確保出錯也不會報 NameError)
+            beautiful_text, payment_options = "", ""
+            raw_content = ""
+            
+            query = f"{name} {str(address)[:10]}"
+            print(f"🔍 [{index+1}/{len(df_to_process)}] 搜尋: {name}")
 
             try:
-                # 這裡放入你原本的 Selenium 搜尋、點擊「關於」、BeautifulSoup 解析邏輯
-                # 為了簡潔，假設執行結果為 beautiful_text 和 payment_options
-                # ... (此處省略中間 Selenium 操盤程式碼) ...
-                
-                # 模擬結果存入 (實際請套用你原本的解析程式碼)
+                # 🌟 關鍵 2：回到打字搜尋流程
+                # A. 先前往主頁面
+                driver.get("https://www.google.com/maps?hl=zh-TW")
+                time.sleep(random.uniform(2, 3)) 
+
+                # B. 找到搜尋框、輸入並 Enter
+                search_box = driver.find_element(By.ID, "searchboxinput") # Maps 的標準搜尋框 ID
+                search_box.clear()
+                search_box.send_keys(query)
+                search_box.send_keys(Keys.ENTER)
+                time.sleep(random.uniform(3, 5))
+
+                # C. 如果搜尋結果是列表，點擊第一個
+                list_items = driver.find_elements(By.CLASS_NAME, "hfpxzc")
+                if list_items:
+                    list_items[0].click()
+                    time.sleep(2)
+
+                # D. 點擊「關於 (About)」
+                try:
+                    # 使用多重條件 XPATH 以提高穩定性
+                    about_btn = driver.find_element(By.XPATH, "//button[contains(@aria-label, '關於') or contains(@aria-label, '簡介') or .//div[text()='關於']]")
+                    driver.execute_script("arguments[0].click();", about_btn) # 使用 JS 點擊較不受遮擋影響
+                    time.sleep(2)
+                except Exception:
+                    print(f" ℹ️  {name} 無法點擊「關於」分頁，可能直接顯示在主頁或無簡介。")
+
+                # E. 解析標籤
+                soup = BeautifulSoup(driver.page_source, "html.parser")
+                info_blocks = soup.select('div[role="region"].m6QErb div.iP2t7d')
+                for b in info_blocks:
+                    raw_content += b.get_text(separator="\n") + "\n"
+
+                # 🌟 關鍵 3：將解析出的 raw_content 丟進清洗函式
+                if raw_content.strip():
+                    beautiful_text, payment_options = clean_google_tags_final(raw_content)
+
+                # F. 收集結果至容器
+                if payment_patch is not None and payment_options:
+                    payment_patch[place_id] = payment_options
+                    print(f"    💰 支付方式: {payment_options}")
+
                 if beautiful_text:
                     for section in beautiful_text.split(" || "):
                         new_tag_records.append({
@@ -162,17 +204,17 @@ if __name__ == "__main__":
                             'data_source': 'google_about_tab',
                             'crawled_at': time.strftime('%Y-%m-%d %H:%M:%S')
                         })
-                
-                if payment_options:
-                    payment_patch[place_id] = payment_options
+                    print(f"    ✅ 標籤採集成功")
+                else:
+                    print(f"    ⚠️ 未能解析到有效標籤")
 
             except Exception as e:
-                print(f"  ⚠️ {name} 失敗: {e}")
+                print(f"    ❌ {name} 搜尋過程出錯: {e}")
             
-            time.sleep(random.uniform(1, 2))
-
-    finally:
-        driver.quit()
+            # 每跑完一家店休息一下
+            time.sleep(random.uniform(2, 4))
+    except Exception as global_e:
+        print(f"🚨 執行過程發生嚴重錯誤: {global_e}")
 
     # --- 步驟 4: 合併新舊資料並儲存 ---
     if new_tag_records:
@@ -195,5 +237,14 @@ if __name__ == "__main__":
         print(f"✅ 標籤總表更新成功，目前共 {len(df_final_tags)} 筆記錄。")
     else:
         print("ℹ️ 本次未採集到新標籤。")
+
+    if payment_patch:
+        print("\n🔄 正在將支付方式更新回店家總表...")
+        # 將新抓到的支付方式對應回原本的 full_df
+        full_df['payment_options'] = full_df['place_id'].map(payment_patch).fillna(full_df.get('payment_options', ''))
+        
+        # 覆寫回 GCS 上的 base.csv
+        upload_df_to_gcs(full_df, BUCKET_NAME, BASE_CSV_PATH)
+        print("✅ 店家總表 (base.csv) 支付方式更新完成。")
 
     print(f"🎉 區域 {REGION} 處理結束！")
