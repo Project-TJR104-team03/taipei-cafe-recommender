@@ -11,6 +11,8 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
 from google.cloud import storage
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # --- 1. 雲端工具函數 ---
 def get_gcs_client():
@@ -158,12 +160,27 @@ if __name__ == "__main__":
                 driver.get("https://www.google.com/maps?hl=zh-TW")
                 time.sleep(random.uniform(2, 3)) 
 
-                # B. 找到搜尋框、輸入並 Enter
-                search_box = driver.find_element(By.ID, "searchboxinput") # Maps 的標準搜尋框 ID
-                search_box.clear()
-                search_box.send_keys(query)
-                search_box.send_keys(Keys.ENTER)
-                time.sleep(random.uniform(3, 5))
+                # --- B. 找到搜尋框、輸入並 Enter (穩定版) ---
+                try:
+                    # 建立一個最多等 15 秒的「監視器」
+                    wait = WebDriverWait(driver, 15)
+                    
+                    # 🌟 關鍵：等到搜尋框「真的出現在 DOM」且「可以被看到」
+                    search_box = wait.until(
+                        EC.visibility_of_element_located((By.ID, "searchboxinput"))
+                    )
+                    
+                    search_box.clear()
+                    search_box.send_keys(query)
+                    search_box.send_keys(Keys.ENTER)
+                    
+                    # 這裡可以保留一點點 time.sleep，讓頁面有時間開始跳轉
+                    time.sleep(random.uniform(2, 3)) 
+
+                except Exception as e:
+                    print(f"❌ 搜尋框等太久沒出現，目前網址: {driver.current_url}")
+                    # 這裡可以選擇報錯或是截圖偵錯
+                    raise e
 
                 # C. 如果搜尋結果是列表，點擊第一個
                 list_items = driver.find_elements(By.CLASS_NAME, "hfpxzc")
