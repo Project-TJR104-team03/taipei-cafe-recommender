@@ -7,7 +7,7 @@ from src.config.regions import CAFE_REGIONS  # 匯入你的區域設定檔
 # --- 設定區域 ---
 # 定義腳本執行清單 (顯示名稱, 相對路徑)
 SCRIPTS = [
-    ("1. Store & Dynamic Data (API)", "src/scraper/01_path_b_scanner.py"),
+    # ("1. Store & Dynamic Data (API)", "src/scraper/01_path_b_scanner.py"),
     ("2. Official Tags (Selenium)",   "src/scraper/02_official_tag_scraper.py"),
     ("3. Reviews & User Tags (Selenium)", "src/scraper/03_review_dynamic_scraper.py")
 ]
