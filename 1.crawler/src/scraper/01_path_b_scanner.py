@@ -55,6 +55,24 @@ def upload_to_gcs(df, bucket_name, destination_blob_name):
     except Exception as e:
         print(f"❌ 上傳 GCS 失敗: {e}")
 
+
+def download_from_gcs_to_df(bucket_name, blob_name):
+    """從 GCS 讀取現有總表，若不存在則回傳空 DataFrame"""
+    try:
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        if blob.exists():
+            content = blob.download_as_text()
+            return pd.read_csv(io.StringIO(content))
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"⚠️ 讀取 GCS 總表失敗 (可能是第一次跑): {e}")
+        return pd.DataFrame()
+
+
+
+
 # --- 3. 核心邏輯：網格搜尋 (保留原始邏輯) ---
 def get_cafes_with_grid(gmaps_client, lat, lng, rad, offset, mode, limit=None):
     if mode == MODE_HIGH:
@@ -158,32 +176,20 @@ def fetch_details(gmaps_client, unique_places):
 
 # --- 5. 大腦控制中心 (Cloud Run 入口) ---
 if __name__ == "__main__":
-    print(f"\n" + "="*40)
-    print(f"☁️ [TJR104 Cloud Run 爬蟲系統啟動]")
-    
-    # 1. 讀取 Cloud Run 環境變數
-    # 注意：這些變數必須在 Cloud Run 的「變數與祕密」頁面設定
-    SECRET_RESOURCE_NAME = os.getenv("SECRET_RESOURCE_NAME")
-    BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
-    
-    SCAN_ALL = os.getenv("SCAN_ALL", "false").lower() == "true"
-    SCAN_REGION = os.getenv("SCAN_REGION", "A-2")
-    SCAN_LIMIT_RAW = os.getenv("SCAN_LIMIT")
-    SCAN_LIMIT = int(SCAN_LIMIT_RAW) if (SCAN_LIMIT_RAW and SCAN_LIMIT_RAW.isdigit()) else None
-    
-    # 檢查必要變數
-    if not SECRET_RESOURCE_NAME or not BUCKET_NAME:
-        print("❌ 錯誤: 缺少必要環境變數 (SECRET_RESOURCE_NAME 或 GCS_BUCKET_NAME)")
-        sys.exit(1)
+    # ... (前面的讀取環境變數、初始化 gmaps 邏輯不變) ...
 
-    print(f"   - Target Bucket: {BUCKET_NAME}")
-    print(f"   - Scan Mode: {'ALL Regions' if SCAN_ALL else f'Region {SCAN_REGION}'}")
-    print(f"   - Limit: {SCAN_LIMIT if SCAN_LIMIT else 'No Limit'}")
-    print("="*40 + "\n")
+    # 🌟 插入點 A：在任務開始前，讀取 GCS 現有總表 (這就是你的「黑名單」)
+    print(f"🔍 正在檢查 GCS 現有資料庫...")
+    # 使用我們之前寫的讀取函式 (假設你已定義 download_from_gcs_to_df)
+    df_existing_base = download_from_gcs_to_df(BUCKET_NAME, "raw/store/base.csv")
+    df_existing_dynamic = download_from_gcs_to_df(BUCKET_NAME, "raw/store_dynamic/store_dynamic.csv")
+    
+    # 建立一個 ID 集合，用來快速比對
+    existing_ids = set(df_existing_base['place_id']) if not df_existing_base.empty else set()
+    print(f"📊 目前資料庫已存有 {len(existing_ids)} 筆店家。")
 
-    # 2. 初始化 Google Maps Client (從 Secret Manager 拿 Key)
-    api_key = get_secret(SECRET_RESOURCE_NAME)
-    gmaps = googlemaps.Client(key=api_key)
+    all_stores_new = []   # 這次任務新抓到的基本資料
+    all_dynamic_new = []  # 這次任務新抓到的動態資料
 
     # 3. 決定執行範圍
     run_list = list(CAFE_REGIONS.keys()) if SCAN_ALL else [SCAN_REGION]
@@ -191,44 +197,63 @@ if __name__ == "__main__":
     # 4. 執行任務循環
     for r_id in run_list:
         cfg = CAFE_REGIONS.get(r_id)
-        if not cfg: 
-            print(f"⚠️ 找不到區域設定: {r_id}，跳過。")
-            continue
+        if not cfg: continue
         
         print(f"\n📍 正在處理區域: {r_id} ...")
         
-        # (A) 搜尋
+        # (A) 搜尋：網格抓回一堆 ID
         basic_list = get_cafes_with_grid(
             gmaps, cfg['lat'], cfg['lng'], cfg['radius'], cfg['offset'], cfg['mode'], limit=SCAN_LIMIT
         )
         
-        if not basic_list:
-            print(f"   區域 {r_id} 未找到任何店家。")
+        if not basic_list: continue
+
+        # 🌟 插入點 B：過濾重複店家
+        # 只留下「不存在於 existing_ids」的店家才去跑 fetch_details
+        new_to_crawl = [p for p in basic_list if p['place_id'] not in existing_ids]
+        print(f"✨ 網格掃到 {len(basic_list)} 筆，其中 {len(new_to_crawl)} 筆是新發現，準備採集...")
+
+        if not new_to_crawl:
+            print(f"⏩ 區域 {r_id} 無新店家，跳過 API 詳細採集。")
             continue
 
-        # (B) 抓細節
-        store_data, dynamic_data = fetch_details(gmaps, basic_list)
+        # (B) 抓細節：只對「新面孔」花錢呼叫 API
+        store_data, dynamic_data = fetch_details(gmaps, new_to_crawl)
 
-        # (C) 準備上傳 GCS
-        # 加入時間戳記以利 Airflow 辨識新檔案
-        timestamp = time.strftime('%Y%m%d_%H%M')
-
-        # 上傳 Store Base Data
+        # 將這次新抓到的放進「新資料容器」
         if store_data:
-            upload_to_gcs(
-                pd.DataFrame(store_data), 
-                BUCKET_NAME, 
-                f"raw/store/{r_id}_{timestamp}_base.csv"
-            )
-        
-        # 上傳 Dynamic Data
+            all_stores_new.extend(store_data)
+            # 同時更新 existing_ids，避免同一次任務中跨區重疊重複抓
+            for item in store_data:
+                existing_ids.add(item['place_id'])
+                
         if dynamic_data:
-            upload_to_gcs(
-                pd.DataFrame(dynamic_data), 
-                BUCKET_NAME, 
-                f"raw/store_dynamic/{r_id}_{timestamp}_dynamic.csv"
-            )
+            all_dynamic_new.extend(dynamic_data)
             
-        print(f"✨ 區域 {r_id} 處理完成。")
+        print(f"✅ 區域 {r_id} 新數據已暫存。")
 
-    print("\n✅ 所有採集任務與雲端同步已結束！")
+    # --- 🌟 5. 插入點 C：統一「舊 + 新」合併並覆寫上傳 ---
+    print(f"\n📦 正在執行全量整合與上傳...")
+
+    # A. 處理 Base Table (靜態大表)
+    if all_stores_new:
+        df_new_base = pd.DataFrame(all_stores_new)
+        # 合併：舊的資料 + 這次新抓的資料
+        df_total_base = pd.concat([df_existing_base, df_new_base], ignore_index=True)
+        # 去重
+        df_total_base = df_total_base.drop_duplicates(subset=['place_id'], keep='first')
+        upload_to_gcs(df_total_base, BUCKET_NAME, "raw/store/base.csv")
+        print(f"💾 總表更新完成！目前共 {len(df_total_base)} 筆店家。")
+    else:
+        print("ℹ️ 本次任務無新店家存入 Base Table。")
+
+    # B. 處理 Dynamic Table (動態大表)
+    if all_dynamic_new:
+        df_new_dynamic = pd.DataFrame(all_dynamic_new)
+        # 合併：舊的動態資料 + 這次新抓的動態資料
+        df_total_dynamic = pd.concat([df_existing_dynamic, df_new_dynamic], ignore_index=True)
+        # 如果你希望每家店只留「最新評分」，這裡 keep='last'
+        # 如果你想留存歷史，就不要去重，直接存
+        upload_to_gcs(df_total_dynamic, BUCKET_NAME, "raw/store_dynamic/store_dynamic.csv")
+    
+    print("\n🎉 增量更新任務已順利結束！")

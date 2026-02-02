@@ -202,75 +202,72 @@ def scrape_reviews_production(driver, p_name, p_addr, p_id, batch_id, last_seen_
 
 # --- 4. 執行主流程 ---
 if __name__ == "__main__":
-    # 環境變數
+    # 1. 環境變數與路徑配置
     BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
     REGION = os.getenv("SCAN_REGION", "A-2")
     SCAN_LIMIT = int(os.getenv("SCAN_LIMIT")) if os.getenv("SCAN_LIMIT") else None
     
-    # GCS 路徑配置
-    # 假設 Base Table 固定放在這裡 (或透過 Airflow 傳入)
-    INPUT_BLOB = f"raw/store/{REGION}_base.csv" 
-    # Checkpoint 檔案 (記錄每個店家上次爬到的 ID)
+    # 指向統一的總表路徑
+    INPUT_BLOB = "raw/store/base.csv"  # 讀取 Step 1 整合後的總名單
+    REVIEWS_TOTAL_PATH = "raw/comments/reviews_total.csv" # 評論總表
+    TAGS_TOTAL_PATH = "raw/tag/tags_total.csv" # 標籤總表
     CHECKPOINT_BLOB = f"raw/checkpoint/sync_checkpoint_{REGION}.csv"
     
-    print(f"🚀 [Review Scraper] 啟動 - 區域: {REGION}")
+    print(f"\n" + "="*50)
+    print(f"🚀 [Review Scraper] 啟動 - 區域模式: {REGION}")
+    print(f"="*50)
     
-    # 1. 讀取店家名單
-    stores_df = load_csv_from_gcs(BUCKET_NAME, INPUT_BLOB)
-    if stores_df is None:
-        print(f"❌ 找不到輸入檔案: gs://{BUCKET_NAME}/{INPUT_BLOB}")
+    # 2. 讀取店家名單 (從總表讀取)
+    full_stores_df = load_csv_from_gcs(BUCKET_NAME, INPUT_BLOB)
+    if full_stores_df is None:
+        print(f"❌ 找不到店家總表: {INPUT_BLOB}")
         sys.exit(1)
         
+    # 這裡可以根據 REGION 篩選，或者如果是 SCAN_ALL 則全跑
+    # 建議：即便跑全域，Step 3 也可以根據 Checkpoint 自動跳過不需要更新的店
+    stores_to_process = full_stores_df
     if SCAN_LIMIT:
-        stores_df = stores_df.head(SCAN_LIMIT)
-        print(f"⚠️ 測試模式: 限制處理前 {SCAN_LIMIT} 筆")
+        stores_to_process = stores_to_process.head(SCAN_LIMIT)
 
-    # 2. 讀取 Checkpoint (若無則建立空的)
-    checkpoint_df = load_csv_from_gcs(BUCKET_NAME, CHECKPOINT_BLOB)
-    if checkpoint_df is None:
-        print("ℹ️ 無 Checkpoint 紀錄，將進行全量抓取。")
-        checkpoint_df = pd.DataFrame(columns=['place_id', 'latest_review_id', 'last_sync_at'])
+    # 3. 讀取現有總表 (準備後續合併)
+    df_existing_reviews = load_csv_from_gcs(BUCKET_NAME, REVIEWS_TOTAL_PATH) or pd.DataFrame()
+    df_existing_tags = load_csv_from_gcs(BUCKET_NAME, TAGS_TOTAL_PATH) or pd.DataFrame()
+    checkpoint_df = load_csv_from_gcs(BUCKET_NAME, CHECKPOINT_BLOB) or pd.DataFrame(columns=['place_id', 'latest_review_id', 'last_sync_at'])
 
-    # 3. 初始化 Selenium
+    # 4. 初始化 Selenium
     chrome_options = webdriver.ChromeOptions()
-    chrome_options.add_argument("--headless") # 必備
-    chrome_options.add_argument("--no-sandbox") # 必備
-    chrome_options.add_argument("--disable-dev-shm-usage") # 必備
-    chrome_options.add_argument("--window-size=900,1000")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--lang=zh-TW") # 確保抓到中文標籤
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-    
-    # 產生本次批次 ID (所有檔案都用這個 ID，方便追蹤)
     BATCH_ID = f"BATCH_{datetime.now().strftime('%Y%m%d_%H%M')}"
     
-    # 暫存容器 (用於累積寫入，避免頻繁 IO)
-    all_reviews = []
-    all_tags = []
-    checkpoint_updates = {} # 暫存 Checkpoint 更新
+    new_reviews_accumulated = []
+    new_tags_accumulated = []
+    checkpoint_updates = {}
 
     try:
-        for idx, row in stores_df.iterrows():
+        for idx, row in stores_to_process.iterrows():
             p_id = row['place_id']
             p_name = row['name']
             p_addr = row.get('formatted_address', '')
             
-            print(f"[{idx+1}/{len(stores_df)}] 處理: {p_name}")
+            print(f"🔍 [{idx+1}/{len(stores_to_process)}] 同步評論: {p_name}")
 
-            # 取得上次爬取的 Review ID
+            # 取得 Checkpoint 進度
             last_id = None
-            if p_id in checkpoint_df['place_id'].values:
+            if not checkpoint_df.empty and p_id in checkpoint_df['place_id'].values:
                 last_id = checkpoint_df.loc[checkpoint_df['place_id'] == p_id, 'latest_review_id'].values[0]
 
-            # 執行爬蟲
+            # 執行爬蟲 (使用你原本強大的 scrape_reviews_production)
             reviews, tags, new_top_id = scrape_reviews_production(
                 driver, p_name, p_addr, p_id, BATCH_ID, last_id
             )
 
-            if reviews: all_reviews.extend(reviews)
-            if tags: all_tags.extend(tags)
-
-            # 更新 Checkpoint 暫存 (只有當真的有抓到新 ID 時才更新)
+            if reviews: new_reviews_accumulated.extend(reviews)
+            if tags: new_tags_accumulated.extend(tags)
             if new_top_id:
                 checkpoint_updates[p_id] = {
                     'place_id': p_id,
@@ -278,37 +275,34 @@ if __name__ == "__main__":
                     'last_sync_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }
             
-            time.sleep(random.uniform(1.5, 3))
+            time.sleep(random.uniform(1, 2))
 
     finally:
         driver.quit()
-        print("\n💾 正在保存資料至 GCS...")
+        print("\n📦 正在執行全量資料整合...")
 
-        # 4. 存檔 (採增量儲存，不覆蓋舊檔)
-        if all_reviews:
-            review_df = pd.DataFrame(all_reviews)
-            # 檔名範例: raw/comments/A-2_reviews_BATCH_20231027.csv
-            review_path = f"raw/comments/{REGION}_reviews_{BATCH_ID}.csv"
-            upload_df_to_gcs(review_df, BUCKET_NAME, review_path)
+        # --- 5. 整合與上傳 (增量模式) ---
         
-        if all_tags:
-            tag_df = pd.DataFrame(all_tags)
-            tag_path = f"raw/tag/{REGION}_tags_{BATCH_ID}.csv"
-            upload_df_to_gcs(tag_df, BUCKET_NAME, tag_path)
+        # A. 評論總表更新
+        if new_reviews_accumulated:
+            df_new_reviews = pd.DataFrame(new_reviews_accumulated)
+            df_total_reviews = pd.concat([df_existing_reviews, df_new_reviews], ignore_index=True)
+            # 評論通常不需過度去重(因為有 review_id)，但可防萬一
+            df_total_reviews = df_total_reviews.drop_duplicates(subset=['review_id'])
+            upload_df_to_gcs(df_total_reviews, BUCKET_NAME, REVIEWS_TOTAL_PATH)
+        
+        # B. 標籤總表更新 (與 Step 2 共用同一個標籤池)
+        if new_tags_accumulated:
+            df_new_tags = pd.DataFrame(new_tags_accumulated)
+            df_total_tags = pd.concat([df_existing_tags, df_new_tags], ignore_index=True)
+            df_total_tags = df_total_tags.drop_duplicates(subset=['place_id', 'Tag'])
+            upload_df_to_gcs(df_total_tags, BUCKET_NAME, TAGS_TOTAL_PATH)
 
-        # 5. 更新並覆寫 Checkpoint (這是唯一需要覆寫的檔案)
+        # C. Checkpoint 更新 (保持原有的覆寫邏輯)
         if checkpoint_updates:
-            # 將新的更新合併回原本的 DF
             for pid, data in checkpoint_updates.items():
-                # 如果已存在，先刪除舊列
                 checkpoint_df = checkpoint_df[checkpoint_df['place_id'] != pid]
-                # 加入新列 (使用 pd.concat)
-                new_row = pd.DataFrame([data])
-                checkpoint_df = pd.concat([checkpoint_df, new_row], ignore_index=True)
-            
+                checkpoint_df = pd.concat([checkpoint_df, pd.DataFrame([data])], ignore_index=True)
             upload_df_to_gcs(checkpoint_df, BUCKET_NAME, CHECKPOINT_BLOB)
-            print("✅ Checkpoint 已更新。")
-        else:
-            print("ℹ️ Checkpoint 無需更新。")
 
-    print("🎉 任務圓滿結束！")
+    print(f"🎉 階段三同步完成！批次 ID: {BATCH_ID}")
