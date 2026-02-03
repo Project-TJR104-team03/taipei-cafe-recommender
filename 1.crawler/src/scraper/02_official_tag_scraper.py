@@ -43,41 +43,43 @@ def upload_df_to_gcs(df, bucket_name, blob_name):
     blob.upload_from_string(csv_buffer.getvalue(), content_type='text/csv')
     print(f"✅ 已儲存至: gs://{bucket_name}/{blob_name}")
 
-# --- 2. 結構化清洗函數 ---
+# --- 2. 結構化清洗函數 (移除符號、過濾斜線、抓支付方式) ---
 def clean_google_tags_final(raw_content):
     if not raw_content: return "", ""
 
-    # 1. 取得去重後的行列表
     lines = [l.strip() for l in raw_content.split('\n') if l.strip()]
     unique_lines = []
-    for x in lines:
-        if x not in unique_lines:
-            unique_lines.append(x)
+    [unique_lines.append(x) for x in lines if x not in unique_lines]
 
     formatted_sections = []
     payment_methods = []
     
-    # 🌟 核心修正：狀態追蹤 (State Machine)
-    current_category = "其他" # 預設類別
+    for section in unique_lines:
+        # 過濾：有斜線 () 或 [無] 代表沒有提供，直接跳過不抓
+        if "" in section or "[無]" in section:
+            continue
 
-    for line in lines:
-        if "" in line or "[無]" in line: continue
+        if '' in section:
+            parts = section.split('')
+            category = parts[0].strip()
+            # 移除✔：只抓取文字項目
+            items_list = [p.strip() for p in parts[1:] if p.strip()]
+            
+            # 格式：類別：項目1 | 項目2
+            items_str = " | ".join(items_list)
+            formatted_sections.append(f"{category}：{items_str}")
+            
+            # 提取支付方式供後續回填
+            if "付款" in category:
+                payment_methods.extend(items_list)
 
-        # 🌟 補強：除了檢查特殊的 ''，也檢查其他可能的勾勾變體或常見符號
-        # 甚至可以檢查該行是否以特定的非文字字元開頭
-        if '' in line or '✓' in line or '✔' in line:
-            item = line.replace('', '').replace('✓', '').replace('✔', '').strip()
-            if item:
-                formatted_sections.append(f"{current_category}：{item}")
-                if "付款" in current_category:
-                    payment_methods.append(item)
-        else:
-            # 這是類別名稱
-            current_category = line
+    full_tags_text = " || ".join(formatted_sections)
+    # 支付方式合併為逗號字串
+    payment_options_str = ",".join(payment_methods) if payment_methods else ""
+    
+    return full_tags_text, payment_options_str
 
-    beautiful_text = " || ".join(formatted_sections)
-    payment_options = ",".join(payment_methods) if payment_methods else ""
-    return beautiful_text, payment_options
+
 
 # --- 3. 核心執行邏輯 ---
 if __name__ == "__main__":
@@ -126,15 +128,15 @@ if __name__ == "__main__":
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage") # 解決 Tab Crashed 關鍵 
-    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("--window-size=900,1000")
     chrome_options.add_argument("--lang=zh-TW")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     wait = WebDriverWait(driver, 15)
     
     batch_size = 3  # 設定每 3 筆為一個批次
-    new_tag_records = []
     payment_patch = {}
 
     try:
@@ -157,7 +159,8 @@ if __name__ == "__main__":
 
             try:
                 # A. 前往主頁 (使用標準 Google Maps 網址提高穩定性)
-                driver.get("https://www.google.com.tw/maps?hl=zh-TW")
+                driver.get("https://www.google.com.tw/maps")
+                time.sleep(1.5)
                 
                 #如果是批次的第一筆，多等 2 秒讓 Javascript 跑完
                 if (i - 1) % batch_size == 0:
@@ -203,15 +206,14 @@ if __name__ == "__main__":
 
                 # F. 解析標籤
                 soup = BeautifulSoup(driver.page_source, "html.parser")
-                info_blocks = soup.select('div.iP2t7d') # 沿用你確認正確的選擇器
+                raw_content = ""
+                # 採用最穩定的簡介區塊選擇器
+                info_blocks = soup.select('div[role="region"].m6QErb div.iP2t7d')
                 
-                print(f"    🔬 偵錯：找到 {len(info_blocks)} 個 .iP2t7d 區塊")
+                print(f"    🔬 找到 {len(info_blocks)} 個 .iP2t7d 區塊")
 
                 for b in info_blocks:
-                    content = b.get_text(separator="\n").strip()
-                    print(f"    📝 區塊原始內容: {content}")
-                    if content:
-                        raw_content += content + "\n"
+                    raw_content += b.text + "\n"
 
                 if raw_content.strip():
                     beautiful_text, payment_options = clean_google_tags_final(raw_content)
@@ -220,15 +222,19 @@ if __name__ == "__main__":
                     print(f"    ⚠️ {name} 雖然找到區塊但裡面沒文字")
 
                 if payment_options:
-                    payment_patch[place_id] = payment_options
-                    print(f"    💰 支付方式: {payment_options}")
+                    payment_patch[row['place_id']] = payment_options
+                    print(f"    找到支付方式: {payment_options}")
 
                 if beautiful_text:
+                    new_tag_records = []
                     print(f"    📝 抓到標籤: {beautiful_text[:50]}...")
                     for section in beautiful_text.split(" || "):
                         new_tag_records.append({
-                            'name': name, 'place_id': place_id, 'Tag': section, 'payment_info': payment_options,
-                            'data_source': 'google_about_tab', 'crawled_at': time.strftime('%Y-%m-%d %H:%M:%S')
+                            'name': row['name'],
+                            'place_id': row['place_id'],
+                            'Tag': section,
+                            'Tag_id': "PENDING",
+                            'data_source': 'google簡介標籤'
                         })
                     print(f"    ✅ 標籤採集成功")
                 else:
