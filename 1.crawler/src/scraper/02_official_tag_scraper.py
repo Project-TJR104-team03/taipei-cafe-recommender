@@ -47,27 +47,38 @@ def upload_df_to_gcs(df, bucket_name, blob_name):
 def clean_google_tags_final(raw_content):
     if not raw_content: return "", ""
 
+    # 1. 取得去重後的行列表
     lines = [l.strip() for l in raw_content.split('\n') if l.strip()]
     unique_lines = []
-    [unique_lines.append(x) for x in lines if x not in unique_lines]
+    for x in lines:
+        if x not in unique_lines:
+            unique_lines.append(x)
 
     formatted_sections = []
     payment_methods = []
     
-    for section in unique_lines:
-        if "" in section or "[無]" in section:
+    # 🌟 核心修正：狀態追蹤 (State Machine)
+    current_category = "其他" # 預設類別
+
+    for line in unique_lines:
+        # 過濾雜訊
+        if "" in line or "[無]" in line:
             continue
 
-        if '' in section:
-            parts = section.split('')
-            category = parts[0].strip()
-            items_list = [p.strip() for p in parts[1:] if p.strip()]
-            
-            items_str = " | ".join(items_list)
-            formatted_sections.append(f"{category}：{items_str}")
-            
-            if "付款" in category:
-                payment_methods.extend(items_list)
+        if '' in line:
+            # 這是項目行 (例如:  內用)
+            item = line.replace('', '').strip()
+            if item:
+                # 使用「當前記住的類別」來組合
+                formatted_sections.append(f"{current_category}：{item}")
+                
+                # 如果類別包含付款，收進支付清單
+                if "付款" in current_category:
+                    payment_methods.append(item)
+        else:
+            # 這是類別標題行 (例如: 服務選項)
+            # 更新目前類別，讓後面的勾勾項目使用
+            current_category = line
 
     full_tags_text = " || ".join(formatted_sections)
     payment_options_str = ",".join(payment_methods) if payment_methods else ""
