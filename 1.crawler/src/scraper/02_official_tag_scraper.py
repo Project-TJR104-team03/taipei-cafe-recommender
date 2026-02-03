@@ -128,15 +128,22 @@ if __name__ == "__main__":
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     wait = WebDriverWait(driver, 15)
     
+    batch_size = 3  # 設定每 3 筆為一個批次
     new_tag_records = []
     payment_patch = {}
 
     try:
-        for index, row in df_to_process.iterrows():
+        for i, (index, row) in enumerate(df_to_process.iterrows(), 1):
             place_id = row.get('place_id')
             name = row.get('name')
             address = row.get('formatted_address', '')
             
+            if (i - 1) % batch_size == 0:
+                if 'driver' in locals(): driver.quit() # 如果已有 driver 則先關閉
+                print(f"🔄 啟動全新瀏覽器實例 (處理第 {i} 筆起)...")
+                driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+                wait = WebDriverWait(driver, 15)
+
             beautiful_text, payment_options, raw_content = "", "", ""
             query = f"{name} {str(address)[:10]}"
             print(f"🔍 [{index+1}/{len(df_to_process)}] 搜尋: {name}")
@@ -205,10 +212,31 @@ if __name__ == "__main__":
             
             time.sleep(random.uniform(1, 2))
 
+            # --- 🌟 關鍵點：每 3 筆執行一次「中途存檔」 ---
+            if i % batch_size == 0 or i == len(df_to_process):
+                if new_tag_records:
+                    print(f"💾 達到 {batch_size} 筆，執行中途存檔至 GCS...")
+                    
+                    # 重新讀取最新的總表 (避免多個 Job 同時寫入衝突，雖然 Job 通常是單一的)
+                    df_latest_existing = load_csv_from_gcs(BUCKET_NAME, TAGS_TOTAL_PATH)
+                    df_new_batch = pd.DataFrame(new_tag_records)
+                    
+                    # 合併並去重
+                    df_updated_tags = pd.concat([df_latest_existing, df_new_batch], ignore_index=True)
+                    df_updated_tags = df_updated_tags.drop_duplicates(subset=['place_id', 'Tag'])
+                    
+                    # 存回 GCS
+                    upload_df_to_gcs(df_updated_tags, BUCKET_NAME, TAGS_TOTAL_PATH)
+                    
+                    # 存完後清空暫存容器，避免下次重複存入
+                    new_tag_records = []
+                    print(f"✅ 中途存檔完成，已釋放暫存清單。")
+
     finally:
         # 🌟 釋放資源與記憶體
-        driver.quit()
-        print("🧹 瀏覽器已關閉")
+        if 'driver' in locals():
+            driver.quit()
+            print("🧹 任務結束，瀏覽器已關閉。")
 
     # --- 儲存資料 ---
     if new_tag_records:
