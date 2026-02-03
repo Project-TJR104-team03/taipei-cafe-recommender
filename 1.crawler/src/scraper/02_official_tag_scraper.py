@@ -199,8 +199,6 @@ if __name__ == "__main__":
                 for b in info_blocks:
                     raw_content += b.get_text(separator="\n") + "\n"
 
-                print(raw_content)
-                
                 if raw_content.strip():
                     beautiful_text, payment_options = clean_google_tags_final(raw_content)
 
@@ -208,9 +206,10 @@ if __name__ == "__main__":
                     payment_patch[place_id] = payment_options
 
                 if beautiful_text:
+                    print(f"準備存入的內容: {beautiful_text}")
                     for section in beautiful_text.split(" || "):
                         new_tag_records.append({
-                            'name': name, 'place_id': place_id, 'Tag': section,
+                            'name': name, 'place_id': place_id, 'Tag': section, 'payment_info': payment_options,
                             'data_source': 'google_about_tab', 'crawled_at': time.strftime('%Y-%m-%d %H:%M:%S')
                         })
                     print(f"    ✅ 標籤採集成功")
