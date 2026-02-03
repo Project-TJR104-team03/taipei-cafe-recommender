@@ -196,22 +196,33 @@ if __name__ == "__main__":
 
                 # E. 點擊「關於」分頁 (增加等待)
                 try:
+                    # 點擊按鈕
                     about_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@aria-label, '關於') or contains(@aria-label, '簡介') or .//div[text()='關於']]")))
                     driver.execute_script("arguments[0].click();", about_btn)
-                    time.sleep(2)
-                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.iP2t7d, div.fontBodyMedium')))
-                    time.sleep(1.5) # 給一點點緩衝讓文字渲染完全
-                except:
-                    print(f" ℹ️  {name} 無法點擊「關於」分頁")
+                    
+                    # 這能確保 BeautifulSoup 抓到的是完整有內容的 HTML
+                    wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, 'div[role="region"]'), ""))
+                    time.sleep(1) # 最後的渲染緩衝
+                except Exception:
+                    # 有些店真的沒標籤，這裡印出標題來診斷是否跳轉成功
+                    print(f" ℹ️  {name} 沒偵測到勾勾標籤，標題: {driver.title}")
 
                 # F. 解析標籤
                 soup = BeautifulSoup(driver.page_source, "html.parser")
-                info_blocks = soup.select('div.iP2t7d, .G869zc')
+                info_blocks = soup.select('div.iP2t7d') # 沿用你確認正確的選擇器
+                
+                print(f"    🔬 偵錯：找到 {len(info_blocks)} 個 .iP2t7d 區塊")
+
                 for b in info_blocks:
-                    raw_content += b.get_text(separator="\n") + "\n"
+                    content = b.get_text(separator="\n").strip()
+                    if content:
+                        raw_content += content + "\n"
 
                 if raw_content.strip():
                     beautiful_text, payment_options = clean_google_tags_final(raw_content)
+                else:
+                    # 如果 raw_content 是空的，這裡就是問題點
+                    print(f"    ⚠️ {name} 雖然找到區塊但裡面沒文字")
 
                 if payment_options:
                     payment_patch[place_id] = payment_options
@@ -228,7 +239,7 @@ if __name__ == "__main__":
                 else:
                     print(f"    ⚠️ {name} 頁面已載入，但未偵測到結構化標籤內容。")
 
-                    
+
             except (TimeoutException, WebDriverException) as e:
                 page_title = driver.title
                 print(f"    ❌ {name} 過程出錯 (跳過): {type(e).__name__}")
