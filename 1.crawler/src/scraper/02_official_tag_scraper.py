@@ -199,14 +199,14 @@ if __name__ == "__main__":
                     about_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@aria-label, '關於') or contains(@aria-label, '簡介') or .//div[text()='關於']]")))
                     driver.execute_script("arguments[0].click();", about_btn)
                     time.sleep(2)
-                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role="region"]')))
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.iP2t7d, div.fontBodyMedium')))
                     time.sleep(1.5) # 給一點點緩衝讓文字渲染完全
                 except:
                     print(f" ℹ️  {name} 無法點擊「關於」分頁")
 
                 # F. 解析標籤
                 soup = BeautifulSoup(driver.page_source, "html.parser")
-                info_blocks = soup.select('div[role="region"].m6QErb div.iP2t7d')
+                info_blocks = soup.select('div.iP2t7d, .G869zc')
                 for b in info_blocks:
                     raw_content += b.get_text(separator="\n") + "\n"
 
@@ -215,16 +215,20 @@ if __name__ == "__main__":
 
                 if payment_options:
                     payment_patch[place_id] = payment_options
+                    print(f"    💰 支付方式: {payment_options}")
 
                 if beautiful_text:
-                    print(f"準備存入的內容: {beautiful_text}")
+                    print(f"    📝 抓到標籤: {beautiful_text[:50]}...")
                     for section in beautiful_text.split(" || "):
                         new_tag_records.append({
                             'name': name, 'place_id': place_id, 'Tag': section, 'payment_info': payment_options,
                             'data_source': 'google_about_tab', 'crawled_at': time.strftime('%Y-%m-%d %H:%M:%S')
                         })
-                    print(f"    ✅ 標籤採集成功")
+                    print(f"    ✅ 標籤採集成功")
+                else:
+                    print(f"    ⚠️ {name} 頁面已載入，但未偵測到結構化標籤內容。")
 
+                    
             except (TimeoutException, WebDriverException) as e:
                 page_title = driver.title
                 print(f"    ❌ {name} 過程出錯 (跳過): {type(e).__name__}")
