@@ -60,30 +60,24 @@ def clean_google_tags_final(raw_content):
     # 🌟 核心修正：狀態追蹤 (State Machine)
     current_category = "其他" # 預設類別
 
-    for line in unique_lines:
-        # 過濾雜訊
-        if "" in line or "[無]" in line:
-            continue
+    for line in lines:
+        if "" in line or "[無]" in line: continue
 
-        if '' in line:
-            # 這是項目行 (例如:  內用)
-            item = line.replace('', '').strip()
+        # 🌟 補強：除了檢查特殊的 ''，也檢查其他可能的勾勾變體或常見符號
+        # 甚至可以檢查該行是否以特定的非文字字元開頭
+        if '' in line or '✓' in line or '✔' in line:
+            item = line.replace('', '').replace('✓', '').replace('✔', '').strip()
             if item:
-                # 使用「當前記住的類別」來組合
                 formatted_sections.append(f"{current_category}：{item}")
-                
-                # 如果類別包含付款，收進支付清單
                 if "付款" in current_category:
                     payment_methods.append(item)
         else:
-            # 這是類別標題行 (例如: 服務選項)
-            # 更新目前類別，讓後面的勾勾項目使用
+            # 這是類別名稱
             current_category = line
 
-    full_tags_text = " || ".join(formatted_sections)
-    payment_options_str = ",".join(payment_methods) if payment_methods else ""
-    
-    return full_tags_text, payment_options_str
+    beautiful_text = " || ".join(formatted_sections)
+    payment_options = ",".join(payment_methods) if payment_methods else ""
+    return beautiful_text, payment_options
 
 # --- 3. 核心執行邏輯 ---
 if __name__ == "__main__":
@@ -215,6 +209,7 @@ if __name__ == "__main__":
 
                 for b in info_blocks:
                     content = b.get_text(separator="\n").strip()
+                    print(f"    📝 區塊原始內容: {content}")
                     if content:
                         raw_content += content + "\n"
 
