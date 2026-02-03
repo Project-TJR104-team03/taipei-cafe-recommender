@@ -157,7 +157,7 @@ if __name__ == "__main__":
                 #如果是批次的第一筆，多等 2 秒讓 Javascript 跑完
                 if (i - 1) % batch_size == 0:
                     time.sleep(3) 
-                    
+
                 # B. 處理 Cookie 同意彈窗
                 try:
                     consent_btn = WebDriverWait(driver, 5).until(
@@ -188,6 +188,8 @@ if __name__ == "__main__":
                     about_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@aria-label, '關於') or contains(@aria-label, '簡介') or .//div[text()='關於']]")))
                     driver.execute_script("arguments[0].click();", about_btn)
                     time.sleep(2)
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role="region"]')))
+                    time.sleep(1.5) # 給一點點緩衝讓文字渲染完全
                 except:
                     print(f" ℹ️  {name} 無法點擊「關於」分頁")
 
@@ -197,6 +199,8 @@ if __name__ == "__main__":
                 for b in info_blocks:
                     raw_content += b.get_text(separator="\n") + "\n"
 
+                print(raw_content)
+                
                 if raw_content.strip():
                     beautiful_text, payment_options = clean_google_tags_final(raw_content)
 
