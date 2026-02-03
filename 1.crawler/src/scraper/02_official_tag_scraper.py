@@ -139,10 +139,12 @@ if __name__ == "__main__":
             address = row.get('formatted_address', '')
             
             if (i - 1) % batch_size == 0:
-                if 'driver' in locals(): driver.quit() # 如果已有 driver 則先關閉
+                if 'driver' in locals(): 
+                    try : driver.quit() # 如果已有 driver 則先關閉
+                    except : pass
                 print(f"🔄 啟動全新瀏覽器實例 (處理第 {i} 筆起)...")
                 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-                wait = WebDriverWait(driver, 15)
+                wait = WebDriverWait(driver, 20)
 
             beautiful_text, payment_options, raw_content = "", "", ""
             query = f"{name} {str(address)[:10]}"
@@ -152,6 +154,10 @@ if __name__ == "__main__":
                 # A. 前往主頁 (使用標準 Google Maps 網址提高穩定性)
                 driver.get("https://www.google.com.tw/maps?hl=zh-TW")
                 
+                #如果是批次的第一筆，多等 2 秒讓 Javascript 跑完
+                if (i - 1) % batch_size == 0:
+                    time.sleep(3) 
+                    
                 # B. 處理 Cookie 同意彈窗
                 try:
                     consent_btn = WebDriverWait(driver, 5).until(
@@ -164,10 +170,12 @@ if __name__ == "__main__":
 
                 # C. 顯式等待搜尋框出現
                 search_box = driver.find_element(By.NAME, "q")
+                search_box.click()
+                time.sleep(0.5)
                 search_box.clear()
                 search_box.send_keys(query)
                 search_box.send_keys(Keys.ENTER)
-                time.sleep(random.uniform(2, 4))
+                time.sleep(random.uniform(3, 5))
 
                 # D. 處理列表或直接進入
                 list_items = driver.find_elements(By.CLASS_NAME, "hfpxzc")
