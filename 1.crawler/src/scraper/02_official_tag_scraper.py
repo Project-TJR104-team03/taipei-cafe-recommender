@@ -138,6 +138,7 @@ if __name__ == "__main__":
     
     batch_size = 3  # 設定每 3 筆為一個批次
     payment_patch = {}
+    new_tag_records = []
 
     try:
         for i, (index, row) in enumerate(df_to_process.iterrows(), 1):
@@ -226,7 +227,6 @@ if __name__ == "__main__":
                     print(f"    找到支付方式: {payment_options}")
 
                 if beautiful_text:
-                    new_tag_records = []
                     print(f"    📝 抓到標籤: {beautiful_text[:50]}...")
                     for section in beautiful_text.split(" || "):
                         new_tag_records.append({
