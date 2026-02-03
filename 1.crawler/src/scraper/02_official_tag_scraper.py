@@ -156,7 +156,7 @@ if __name__ == "__main__":
                     pass
 
                 # C. 顯式等待搜尋框出現
-                search_box = wait.until(EC.visibility_of_element_located((By.ID, "searchboxinput")))
+                search_box = driver.find_element(By.NAME, "q")
                 search_box.clear()
                 search_box.send_keys(query)
                 search_box.send_keys(Keys.ENTER)
@@ -197,7 +197,10 @@ if __name__ == "__main__":
                     print(f"    ✅ 標籤採集成功")
 
             except (TimeoutException, WebDriverException) as e:
+                page_title = driver.title
                 print(f"    ❌ {name} 過程出錯 (跳過): {type(e).__name__}")
+                print(f"    ℹ️ 當時網頁標題為: {page_title} | 網址: {driver.current_url}")
+
                 continue # 跳過這間，繼續下一間
             
             time.sleep(random.uniform(1, 2))
