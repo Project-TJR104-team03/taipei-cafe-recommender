@@ -207,7 +207,6 @@ marimo/_lsp/
 __marimo__/
 
 # 敏感金鑰檔
-*.json
 *.env
 
 # Airflow 本地產生的日誌與目錄
