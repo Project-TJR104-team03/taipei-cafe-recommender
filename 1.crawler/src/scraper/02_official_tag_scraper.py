@@ -20,33 +20,28 @@ def get_gcs_client():
     return storage.Client()
 
 def load_csv_from_gcs(bucket_name, blob_name):
-    """從 GCS 讀取 CSV 轉為 DataFrame """
+    """從 GCS 讀取 CSV"""
     client = get_gcs_client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    
     if not blob.exists():
-        print(f"⚠️ GCS 檔案不存在: gs://{bucket_name}/{blob_name}")
         return None
-        
     content = blob.download_as_string()
     return pd.read_csv(io.BytesIO(content))
 
 def upload_df_to_gcs(df, bucket_name, blob_name):
-    """將 DataFrame 上傳回 GCS """
+    """上傳 DataFrame 到 GCS"""
     client = get_gcs_client()
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(blob_name)
-    
     csv_buffer = io.StringIO()
     df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
     blob.upload_from_string(csv_buffer.getvalue(), content_type='text/csv')
-    print(f"✅ 已儲存至: gs://{bucket_name}/{blob_name}")
+    print(f" 已儲存至: gs://{bucket_name}/{blob_name}")
 
-# --- 2. 結構化清洗函數 (移除符號、過濾斜線、抓支付方式) ---
+# --- 2. 標籤清洗函式 ---
 def clean_google_tags_final(raw_content):
     if not raw_content: return "", ""
-
     lines = [l.strip() for l in raw_content.split('\n') if l.strip()]
     unique_lines = []
     [unique_lines.append(x) for x in lines if x not in unique_lines]
@@ -55,89 +50,62 @@ def clean_google_tags_final(raw_content):
     payment_methods = []
     
     for section in unique_lines:
-        # 過濾：有斜線 () 或 [無] 代表沒有提供，直接跳過不抓
-        if "" in section or "[無]" in section:
-            continue
-
+        if "" in section or "[無]" in section: continue
         if '' in section:
             parts = section.split('')
             category = parts[0].strip()
-            # 移除✔：只抓取文字項目
             items_list = [p.strip() for p in parts[1:] if p.strip()]
-            
-            # 格式：類別：項目1 | 項目2
             items_str = " | ".join(items_list)
             formatted_sections.append(f"{category}：{items_str}")
-            
-            # 提取支付方式供後續回填
             if "付款" in category:
                 payment_methods.extend(items_list)
 
     full_tags_text = " || ".join(formatted_sections)
-    # 支付方式合併為逗號字串
     payment_options_str = ",".join(payment_methods) if payment_methods else ""
-    
     return full_tags_text, payment_options_str
-
-
 
 # --- 3. 核心執行邏輯 ---
 if __name__ == "__main__":
-    # 1. 環境變數設定
     BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
     REGION = os.getenv("SCAN_REGION", "A-2")
     ENV_LIMIT = os.getenv("SCAN_LIMIT")
     SCAN_LIMIT = int(ENV_LIMIT) if (ENV_LIMIT and ENV_LIMIT.isdigit()) else None
 
     if not BUCKET_NAME:
-        print("❌ 錯誤: 找不到環境變數 GCS_BUCKET_NAME")
+        print(" 錯誤: 找不到環境變數 GCS_BUCKET_NAME")
         sys.exit(1)
 
     BASE_CSV_PATH = "raw/store/base.csv"
-    TAGS_TOTAL_PATH = "raw/tag/tags_total.csv"
+    # 架構師建議：將官方標籤獨立存放，避免與評論標籤混淆，或者依據你的需求決定是否合併
+    # 這裡示範獨立檔名，若你要合併，請改為 "raw/tag/tags_total.csv"
+    TAGS_TOTAL_PATH = "raw/tag/tags_official.csv"
 
-    print(f"\n" + "="*50)
-    print(f"🚀 [Tag Scraper] 穩定版啟動")
-    print(f"📍 目標區域: {REGION} | 限制筆數: {SCAN_LIMIT if SCAN_LIMIT else '無'}")
-    print(f"="*50)
+    print(f"🚀 [02 Cloud Tag & URL Scraper] 啟動 | 區域: {REGION}")
 
-    # 讀取名單
     full_df = load_csv_from_gcs(BUCKET_NAME, BASE_CSV_PATH)
     if full_df is None or full_df.empty:
-        print("❌ 找不到店家總表 (base.csv)")
+        print(" 找不到 base.csv")
         sys.exit(1)
 
-    df_existing_tags = load_csv_from_gcs(BUCKET_NAME, TAGS_TOTAL_PATH)
-    
-    if df_existing_tags is not None and not df_existing_tags.empty:
-        done_ids = set(df_existing_tags['place_id'].unique())
-        df_to_process = full_df[~full_df['place_id'].isin(done_ids)]
-    else:
-        df_to_process = full_df
-        df_existing_tags = pd.DataFrame()
+    # 簡單過濾：只跑還沒有 URL 的，或者根據 SCAN_LIMIT 跑
+    # 這裡先假設照 SCAN_LIMIT 跑
+    df_to_process = full_df.head(SCAN_LIMIT) if SCAN_LIMIT else full_df
 
-    if SCAN_LIMIT:
-        df_to_process = df_to_process.head(SCAN_LIMIT)
-
-    if df_to_process.empty:
-        print("✅ 所有店家皆已爬取完畢。")
-        sys.exit(0)
-
-    # --- 初始化 Selenium ---
+    # 初始化 Selenium (雲端配置)
     chrome_options = webdriver.ChromeOptions()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage") # 解決 Tab Crashed 關鍵 
+    chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=900,1000")
     chrome_options.add_argument("--lang=zh-TW")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     wait = WebDriverWait(driver, 15)
     
-    batch_size = 3  # 設定每 3 筆為一個批次
+    batch_size = 3
     payment_patch = {}
+    url_patch = {} #  新增：網址收集器
     new_tag_records = []
 
     try:
@@ -146,144 +114,117 @@ if __name__ == "__main__":
             name = row.get('name')
             address = row.get('formatted_address', '')
             
-            if (i - 1) % batch_size == 0:
-                if 'driver' in locals(): 
-                    try : driver.quit() # 如果已有 driver 則先關閉
-                    except : pass
-                print(f"🔄 啟動全新瀏覽器實例 (處理第 {i} 筆起)...")
+            # 批次重啟 (記憶體管理)
+            if (i - 1) % batch_size == 0 and i > 1:
+                driver.quit()
                 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
-                wait = WebDriverWait(driver, 20)
+                wait = WebDriverWait(driver, 15)
 
-            beautiful_text, payment_options, raw_content = "", "", ""
             query = f"{name} {str(address)[:10]}"
-            print(f"🔍 [{index+1}/{len(df_to_process)}] 搜尋: {name}")
+            print(f"[{i}/{len(df_to_process)}]  搜尋: {name}")
 
             try:
-                # A. 前往主頁 (使用標準 Google Maps 網址提高穩定性)
                 driver.get("https://www.google.com.tw/maps")
-                time.sleep(1.5)
+                time.sleep(1)
                 
-                #如果是批次的第一筆，多等 2 秒讓 Javascript 跑完
-                if (i - 1) % batch_size == 0:
-                    time.sleep(3) 
-
-                # B. 處理 Cookie 同意彈窗
+                # Cookie 處理
                 try:
-                    consent_btn = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label*='全部接受'], button[aria-label*='Accept all']"))
-                    )
-                    consent_btn.click()
-                    time.sleep(1)
-                except:
-                    pass
+                    btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label*='全部接受'], button[aria-label*='Accept all']")))
+                    btn.click()
+                except: pass
 
-                # C. 顯式等待搜尋框出現
-                search_box = driver.find_element(By.NAME, "q")
-                search_box.click()
-                time.sleep(0.5)
-                search_box.clear()
-                search_box.send_keys(query)
-                search_box.send_keys(Keys.ENTER)
-                time.sleep(random.uniform(3, 5))
+                box = driver.find_element(By.NAME, "q")
+                box.clear()
+                box.send_keys(query + Keys.ENTER)
+                time.sleep(3)
 
-                # D. 處理列表或直接進入
-                list_items = driver.find_elements(By.CLASS_NAME, "hfpxzc")
-                if list_items:
-                    list_items[0].click()
+                items = driver.find_elements(By.CLASS_NAME, "hfpxzc")
+                if items:
+                    items[0].click()
                     time.sleep(2)
 
-                # E. 點擊「關於」分頁 (增加等待)
+                # 🌟 [關鍵新增]：抓取當前 Google Maps 網址
+                current_url = driver.current_url
+                url_patch[place_id] = current_url
+                print(f"     取得網址")
+
+                # 點擊關於
                 try:
-                    # 點擊按鈕
-                    about_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@aria-label, '關於') or contains(@aria-label, '簡介') or .//div[text()='關於']]")))
+                    about_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@aria-label, '關於') or contains(@aria-label, '簡介')]")))
                     driver.execute_script("arguments[0].click();", about_btn)
-                    
-                    # 這能確保 BeautifulSoup 抓到的是完整有內容的 HTML
                     wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, 'div[role="region"]'), ""))
-                    time.sleep(1) # 最後的渲染緩衝
-                except Exception:
-                    # 有些店真的沒標籤，這裡印出標題來診斷是否跳轉成功
-                    print(f" ℹ️  {name} 沒偵測到勾勾標籤，標題: {driver.title}")
+                    time.sleep(1)
+                except:
+                    print(f"     無法進入簡介頁")
 
-                # F. 解析標籤
+                # 解析
                 soup = BeautifulSoup(driver.page_source, "html.parser")
-                raw_content = ""
-                # 採用最穩定的簡介區塊選擇器
                 info_blocks = soup.select('div[role="region"].m6QErb div.iP2t7d')
-                
-                print(f"    🔬 找到 {len(info_blocks)} 個 .iP2t7d 區塊")
+                raw_content = "\n".join([b.text for b in info_blocks])
 
-                for b in info_blocks:
-                    raw_content += b.text + "\n"
-
-                if raw_content.strip():
-                    beautiful_text, payment_options = clean_google_tags_final(raw_content)
-                else:
-                    # 如果 raw_content 是空的，這裡就是問題點
-                    print(f"    ⚠️ {name} 雖然找到區塊但裡面沒文字")
+                beautiful_text, payment_options = clean_google_tags_final(raw_content)
 
                 if payment_options:
-                    payment_patch[row['place_id']] = payment_options
-                    print(f"    找到支付方式: {payment_options}")
-
+                    payment_patch[place_id] = payment_options
+                
                 if beautiful_text:
-                    print(f"    📝 抓到標籤: {beautiful_text[:50]}...")
                     for section in beautiful_text.split(" || "):
                         new_tag_records.append({
-                            'name': row['name'],
-                            'place_id': row['place_id'],
+                            'name': name,
+                            'place_id': place_id,
                             'Tag': section,
                             'Tag_id': "PENDING",
                             'data_source': 'google簡介標籤'
                         })
-                    print(f"    ✅ 標籤採集成功")
-                else:
-                    print(f"    ⚠️ {name} 頁面已載入，但未偵測到結構化標籤內容。")
+                    print(f"     標籤已抓取")
 
-
-            except (TimeoutException, WebDriverException) as e:
-                page_title = driver.title
-                print(f"    ❌ {name} 過程出錯 (跳過): {type(e).__name__}")
-                print(f"    ℹ️ 當時網頁標題為: {page_title} | 網址: {driver.current_url}")
-
-                continue # 跳過這間，繼續下一間
+            except Exception as e:
+                print(f"     錯誤: {e}")
+                continue
             
             time.sleep(random.uniform(1, 2))
 
-            # --- 🌟 關鍵點：每 3 筆執行一次「中途存檔」 ---
-            if i % batch_size == 0 or i == len(df_to_process):
+            # --- 中途存檔 Checkpoint ---
+            if i % batch_size == 0:
+                print(f" 中途存檔...")
+                # 1. 存 Tags
                 if new_tag_records:
-                    print(f"💾 達到 {batch_size} 筆，執行中途存檔至 GCS...")
+                    df_new_tags = pd.DataFrame(new_tag_records)
+                    df_existing_tags = load_csv_from_gcs(BUCKET_NAME, TAGS_TOTAL_PATH)
+                    if df_existing_tags is not None:
+                        df_updated_tags = pd.concat([df_existing_tags, df_new_tags], ignore_index=True)
+                    else:
+                        df_updated_tags = df_new_tags
                     
-                    # 重新讀取最新的總表 (避免多個 Job 同時寫入衝突，雖然 Job 通常是單一的)
-                    df_latest_existing = load_csv_from_gcs(BUCKET_NAME, TAGS_TOTAL_PATH)
-                    df_new_batch = pd.DataFrame(new_tag_records)
-                    
-                    # 合併並去重
-                    df_updated_tags = pd.concat([df_latest_existing, df_new_batch], ignore_index=True)
-                    df_updated_tags = df_updated_tags.drop_duplicates(subset=['place_id', 'Tag'])
-                    
-                    # 存回 GCS
+                    df_updated_tags.drop_duplicates(subset=['place_id', 'Tag'], inplace=True)
                     upload_df_to_gcs(df_updated_tags, BUCKET_NAME, TAGS_TOTAL_PATH)
-                    
-                    # 存完後清空暫存容器，避免下次重複存入
-                    new_tag_records = []
-                    print(f"✅ 中途存檔完成，已釋放暫存清單。")
+                    new_tag_records = [] # 清空暫存
 
+                # 2. 存 Base (回填 URL) - 這裡需要重新讀取最新的 base，以免覆蓋別人的修改
+                if payment_patch or url_patch:
+                    current_base = load_csv_from_gcs(BUCKET_NAME, BASE_CSV_PATH)
+                    if current_base is not None:
+                        # 使用 map 更新
+                        current_base['google_maps_url'] = current_base['place_id'].map(url_patch).fillna(current_base.get('google_maps_url', ''))
+                        current_base['payment_options'] = current_base['place_id'].map(payment_patch).fillna(current_base.get('payment_options', ''))
+                        upload_df_to_gcs(current_base, BUCKET_NAME, BASE_CSV_PATH)
     finally:
-        # 🌟 釋放資源與記憶體
-        if 'driver' in locals():
-            driver.quit()
-            print("🧹 任務結束，瀏覽器已關閉。")
+        driver.quit()
 
-    # --- 儲存資料 ---
+    # --- 最終存檔 ---
+    print("\n 執行最終存檔...")
     if new_tag_records:
         df_new_tags = pd.DataFrame(new_tag_records)
-        df_final_tags = pd.concat([df_existing_tags, df_new_tags], ignore_index=True).drop_duplicates(subset=['place_id', 'Tag'])
+        df_existing_tags = load_csv_from_gcs(BUCKET_NAME, TAGS_TOTAL_PATH)
+        df_final_tags = pd.concat([df_existing_tags, df_new_tags], ignore_index=True) if df_existing_tags is not None else df_new_tags
+        df_final_tags.drop_duplicates(subset=['place_id', 'Tag'], inplace=True)
         upload_df_to_gcs(df_final_tags, BUCKET_NAME, TAGS_TOTAL_PATH)
-        
-        if payment_patch:
-            full_df['payment_options'] = full_df['place_id'].map(payment_patch).fillna(full_df.get('payment_options', ''))
-            upload_df_to_gcs(full_df, BUCKET_NAME, BASE_CSV_PATH)
 
-    print(f"🎉 區域 {REGION} 任務完成！")
+    if payment_patch or url_patch:
+        current_base = load_csv_from_gcs(BUCKET_NAME, BASE_CSV_PATH)
+        if current_base is not None:
+            current_base['google_maps_url'] = current_base['place_id'].map(url_patch).fillna(current_base.get('google_maps_url', ''))
+            current_base['payment_options'] = current_base['place_id'].map(payment_patch).fillna(current_base.get('payment_options', ''))
+            upload_df_to_gcs(current_base, BUCKET_NAME, BASE_CSV_PATH)
+
+    print(" 02 任務結束！")
