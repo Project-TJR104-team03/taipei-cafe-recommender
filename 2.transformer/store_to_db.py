@@ -126,7 +126,7 @@ def run_full_process():
         raw_website = row.get('website')
         website = None if pd.isna(raw_website) else str(raw_website)
 
-        area = extract_area_info(row['address'])
+        area = extract_area_info(row.get('address')) # 建議用 get 防止報錯
         
         # 建構 MongoDB Schema 物件
         store_node = {
@@ -156,10 +156,16 @@ def run_full_process():
                 "data_version": "1.1",
                 "is_processed": False
             },
-            "last_updated": {"$date": datetime.utcnow().isoformat() + "Z"}
+            "last_updated": datetime.utcnow()
         }
-        final_data.append(store_node)
-        
+        if row.get('place_id'):
+            final_data.append(
+                UpdateOne(
+                    {"place_id": row['place_id']},  # 查詢條件：找 ID
+                    {"$set": store_node},           # 更新內容：覆蓋資料
+                    upsert=True                     # 如果找不到就新增
+                )
+            )
     # E. 寫入 MongoDB (取代原本的 json.dump)
     if final_data:
         print(f"🚀 正在連線至 MongoDB ({cfg['DB_NAME']} - {cfg['COLLECTION_NAME']})...")
