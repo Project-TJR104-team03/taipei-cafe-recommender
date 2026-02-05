@@ -1,0 +1,240 @@
+[
+    {
+        "timestamp": "2026-02-04 14:35:24",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "INIT_PREF",
+        "cafe_id": "SYSTEM_INIT",
+        "reason": "有插座的店"
+    },
+    {
+        "timestamp": "2026-02-04 14:53:49",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 14:54:00",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "KEEP",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 14:58:11",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "NO",
+        "cafe_id": "cafe_001",
+        "reason": "no_plug"
+    },
+    {
+        "timestamp": "2026-02-04 14:58:40",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "NO",
+        "cafe_id": "cafe_001",
+        "reason": "太冷"
+    },
+    {
+        "timestamp": "2026-02-04 15:22:38",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 15:22:42",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "KEEP",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 15:31:56",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 15:36:30",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 15:36:41",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "KEEP",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 15:36:59",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 15:41:20",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "KEEP",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 15:47:36",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "KEEP",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 15:47:52",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "NO",
+        "cafe_id": "cafe_001",
+        "reason": "冷氣太冷"
+    },
+    {
+        "timestamp": "2026-02-04 15:49:00",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "KEEP",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 15:55:41",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "INIT_PREF",
+        "cafe_id": "SYSTEM_INIT",
+        "reason": "安靜"
+    },
+    {
+        "timestamp": "2026-02-04 16:41:07",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "INIT_PREF",
+        "cafe_id": "SYSTEM_INIT",
+        "reason": "熱鬧"
+    },
+    {
+        "timestamp": "2026-02-04 16:44:02",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 16:44:03",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 16:44:04",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 16:44:09",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "NO",
+        "cafe_id": "cafe_001",
+        "reason": "noisy"
+    },
+    {
+        "timestamp": "2026-02-04 16:44:11",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "KEEP",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 19:21:47",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "INIT_PREF",
+        "cafe_id": "SYSTEM_INIT",
+        "reason": "熱鬧"
+    },
+    {
+        "timestamp": "2026-02-04 19:21:53",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 19:21:54",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 19:31:15",
+        "user_id": "U52fe4c6955a07cd52ce695bd3b01eab1",
+        "action": "INIT_PREF",
+        "cafe_id": "SYSTEM_INIT",
+        "reason": "安靜"
+    },
+    {
+        "timestamp": "2026-02-04 19:33:11",
+        "user_id": "U52fe4c6955a07cd52ce695bd3b01eab1",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 19:33:32",
+        "user_id": "U52fe4c6955a07cd52ce695bd3b01eab1",
+        "action": "NO",
+        "cafe_id": "cafe_002",
+        "reason": "noisy"
+    },
+    {
+        "timestamp": "2026-02-04 19:34:00",
+        "user_id": "U52fe4c6955a07cd52ce695bd3b01eab1",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 19:35:28",
+        "user_id": "U52fe4c6955a07cd52ce695bd3b01eab1",
+        "action": "KEEP",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 19:36:16",
+        "user_id": "U52fe4c6955a07cd52ce695bd3b01eab1",
+        "action": "NO",
+        "cafe_id": "cafe_001",
+        "reason": "expensive"
+    },
+    {
+        "timestamp": "2026-02-04 19:36:49",
+        "user_id": "U52fe4c6955a07cd52ce695bd3b01eab1",
+        "action": "KEEP",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 19:46:15",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "KEEP",
+        "cafe_id": "cafe_001",
+        "reason": null
+    },
+    {
+        "timestamp": "2026-02-04 19:50:31",
+        "user_id": "Ub539bdbf70bf6fa83e39d0e10d0c6338",
+        "action": "YES",
+        "cafe_id": "cafe_001",
+        "reason": null
+    }
+]

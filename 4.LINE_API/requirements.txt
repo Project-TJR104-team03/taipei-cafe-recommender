@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+line-bot-sdk
+requests
+python-dotenv
+google-generativeai

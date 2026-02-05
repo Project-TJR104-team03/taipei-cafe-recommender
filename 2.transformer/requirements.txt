@@ -1,0 +1,11 @@
+# 資料處理核心
+pandas>=2.0.0
+
+# Google Cloud 服務
+google-cloud-storage>=2.10.0
+
+# 資料庫連線 (包含 dnspython 依賴，支援 srv 協定)
+pymongo[srv]>=4.5.0
+
+# 如果有用到其他數值計算，pandas 通常會依賴 numpy，這裡顯式列出較安全
+numpy>=1.24.0
