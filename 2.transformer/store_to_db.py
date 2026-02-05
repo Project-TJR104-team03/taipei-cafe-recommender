@@ -2,7 +2,7 @@ import pandas as pd
 import json
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from google.cloud import storage
 import io
 from pymongo import MongoClient, UpdateOne
@@ -156,7 +156,7 @@ def run_full_process():
                 "data_version": "1.1",
                 "is_processed": False
             },
-            "last_updated": datetime.utcnow()
+            "last_updated": datetime.now(timezone.utc)
         }
         if row.get('place_id'):
             final_data.append(
