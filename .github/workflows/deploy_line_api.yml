@@ -1,0 +1,72 @@
+# 1. 修正名稱：清楚標示這是 LINE API Service
+name: Deploy 4.LINE Bot (Service)
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - '4.line_api_app/**'  # 只有當這個資料夾變動時才觸發
+  workflow_dispatch:
+
+env:
+  PROJECT_ID: project-tjr104-cafe
+  REGION: asia-east1
+  REPO_NAME: cafe-apps
+  SERVICE_NAME: cafe-linechat-api
+  IMAGE_NAME: line-bot-backend     # ⚠️ 修正：補上缺失的變數
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    # ⚠️ 關鍵修正：將工作目錄切換到 4.line_api 子資料夾
+    # 這樣後面的 docker build . 才會抓到正確的 Dockerfile
+    defaults:
+      run:
+        working-directory: ./4.line_api_app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Google Auth
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: Configure Docker for GAR
+        run: |
+          gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Build Docker Image
+        # 因為上面設定了 defaults.working-directory，這裡的 "." 指的就是 4.line_api
+        run: |
+          docker build -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+                       -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:latest .
+
+      - name: Push Docker Image
+        run: |
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:latest
+    
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          secrets: |
+            LINE_CHANNEL_ACCESS_TOKEN=LINE_CHANNEL_ACCESS_TOKEN:latest
+            LINE_CHANNEL_SECRET=LINE_CHANNEL_SECRET:latest
+            MONGODB_URI=MONGODB_URI:latest
+
+          # 確保沒有 --port 設定，使用 Dockerfile 定義的 8080
+          flags: |
+            --allow-unauthenticated
+            --memory=512Mi
+
+      - name: Show Output
+        run: echo ${{ steps.deploy.outputs.url }}
