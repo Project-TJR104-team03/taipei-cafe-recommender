@@ -61,7 +61,7 @@ jobs:
           secrets: |
             LINE_CHANNEL_ACCESS_TOKEN=LINE_CHANNEL_ACCESS_TOKEN:latest
             LINE_CHANNEL_SECRET=LINE_CHANNEL_SECRET:latest
-            MONGODB_URI=MONGODB_URI:latest
+            MONGODB_URI=Mongo_API_KEY:latest
 
           # 確保沒有 --port 設定，使用 Dockerfile 定義的 8080
           flags: |
