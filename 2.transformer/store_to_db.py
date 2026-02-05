@@ -168,10 +168,10 @@ def run_full_process():
             db = client[cfg['DB_NAME']]
             collection = db[cfg['COLLECTION_NAME']]
             
-            result = collection.bulk_write(mongo_operations)
+            result = collection.bulk_write(final_data)
             
             print(f"🎉 資料庫同步成功！")
-            print(f"   - 總處理: {len(mongo_operations)} 筆")
+            print(f"   - 總處理: {len(final_data)} 筆")
             print(f"   - 新增: {result.upserted_count} 筆")
             print(f"   - 更新: {result.modified_count} 筆")
             
