@@ -11,7 +11,7 @@ env:
   PROJECT_ID: project-tjr104-cafe
   REGION: asia-east1
   REPO_NAME: cafe-apps
-  SERVICE_NAME: cafe-store-to-DB
+  SERVICE_NAME: cafe-store-to-db
 
 jobs:
   deploy:
