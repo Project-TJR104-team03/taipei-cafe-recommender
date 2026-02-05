@@ -3,11 +3,46 @@ import json
 import os
 import re
 from datetime import datetime
+from google.cloud import storage
+import io
+from pymongo import MongoClient, UpdateOne
 
-current_file_path = os.path.abspath(__file__)
-BASE_DIR = os.path.dirname(os.path.dirname(current_file_path))
-INPUT_FILE = os.path.join(BASE_DIR, "data", "raw", "base.csv")
-OUTPUT_FILE = os.path.join(BASE_DIR, "data", "processed", "full_stores_1536_v1.json")
+## --- 1. 設定給cloud run看的環境變數
+
+MONGO_URI = os.getenv("MONGO_URI")
+BUCKET_NAME = os.getenv("BUCKET_NAME")
+DB_NAME = os.getenv("DB_NAME")
+COLLECTION_NAME = os.getenv("COLLECTION_NAME")
+FILE_PATH = os.getenv("FILE_PATH")
+
+def get_config():
+    """從環境變數讀取配置，若缺少關鍵變數則報錯"""
+    config = {
+        "MONGO_URI": os.getenv("MONGO_URI"),
+        "BUCKET_NAME": os.getenv("BUCKET_NAME"),
+        "DB_NAME": os.getenv("DB_NAME"),
+        "COLLECTION_NAME": os.getenv("COLLECTION_NAME"),
+        "FILE_PATH": os.getenv("FILE_PATH")
+    }
+    
+    missing = [k for k, v in config.items() if not v]
+    if missing:
+        raise ValueError(f"❌ 缺少必要的環境變數: {', '.join(missing)}")
+    return config
+
+## --- 2. 讀取 GCP 的 CSV 檔並轉成 Pandas DataFrame ---
+def read_gcs_csv(bucket_name, file_path):
+    """連線 GCS 下載指定 CSV 並回傳 DataFrame"""
+    print(f"📂 正在從 GCS 下載: {file_path}...")
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(file_path)
+    
+    content = blob.download_as_bytes()
+    ## 使用 utf-8-sig 處理可能包含 BOM 的繁體中文 CSV
+    df = pd.read_csv(io.BytesIO(content), encoding='utf-8-sig')
+    return df
+
 
 def extract_area_info(address):
     if pd.isna(address):
@@ -36,25 +71,43 @@ def parse_wkt_point(wkt_str):
 
 
 def run_full_process():
-    if not os.path.exists(INPUT_FILE):
-        print(f"錯誤：找不到來源檔案 {INPUT_FILE}")
+    ## A. 取得設定
+    try:
+        cfg = get_config()
+    except ValueError as e:
+        print(e)
+        return
+
+    ## B. 從 GCS 讀取檔案 (取代原本的 INPUT_FILE)
+    print(f"📂 正在從 GCS 下載: gs://{cfg['BUCKET_NAME']}/{cfg['FILE_PATH']}")
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(cfg['BUCKET_NAME'])
+    blob = bucket.blob(cfg['FILE_PATH'])
+    
+    try:
+        content = blob.download_as_bytes()
+    except Exception as e:
+        print(f"❌ GCS 下載失敗: {e}")
         return
 
     # 定義CSV欄位名稱
     cols = ['name', 'place_id', 'phone', 'address', 'website', 'location', 
             'hours', 'price', 'status', 'types', 'payment']
     
-    # 讀取玄量數據
-    df = pd.read_csv(INPUT_FILE, names=cols, header=0, quotechar='"')
+    # C. 讀取玄量數據
+    df = pd.read_csv(io.BytesIO(content), names=cols, header=0, quotechar='"', encoding='utf-8-sig')
     total_count = len(df)
     print(f"開始全量轉檔程序，總計處理 {total_count} 筆店家資料...")
     
     final_data = []
+
+    # D. 資料清洗與轉換
     for _, row in df.iterrows():
+        # 處理價格
         raw_price = row.get('price')
         price_level = None if pd.isna(raw_price) else float(raw_price)
 
-        # 處理價格
+        # 處理Tags
         raw_types = row.get('types')
         if pd.notna(raw_types):
             all_types = [t.strip() for t in str(raw_types).split(',')]
@@ -107,13 +160,26 @@ def run_full_process():
         }
         final_data.append(store_node)
         
-    # 輸出存成Json
-    os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
-    with open(OUTPUT_FILE, 'w', encoding='utf-8') as f:
-        json.dump(final_data, f, ensure_ascii=False, indent=2)
-    
-    print(f"全量轉檔成功！已完成 {len(final_data)} 筆資料清洗與轉換。")
-    print(f"最終 JSON 路徑：{OUTPUT_FILE}")
+    # E. 寫入 MongoDB (取代原本的 json.dump)
+    if final_data:
+        print(f"🚀 正在連線至 MongoDB ({cfg['DB_NAME']} - {cfg['COLLECTION_NAME']})...")
+        try:
+            client = MongoClient(cfg['MONGO_URI'])
+            db = client[cfg['DB_NAME']]
+            collection = db[cfg['COLLECTION_NAME']]
+            
+            result = collection.bulk_write(mongo_operations)
+            
+            print(f"🎉 資料庫同步成功！")
+            print(f"   - 總處理: {len(mongo_operations)} 筆")
+            print(f"   - 新增: {result.upserted_count} 筆")
+            print(f"   - 更新: {result.modified_count} 筆")
+            
+            client.close()
+        except Exception as e:
+            print(f"🔥 MongoDB 寫入錯誤: {e}")
+    else:
+        print("⚠️ 無有效資料可寫入")
 
 if __name__ == "__main__":
     run_full_process()
