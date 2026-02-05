@@ -1,0 +1,13 @@
+# 資料與金鑰 (最重要！)
+data/
+.env
+*.json
+*.csv
+*.log
+__pycache__/
+*.csv
+
+# IDE 設定
+.vscode/
+.idea/
+.DS_Store
