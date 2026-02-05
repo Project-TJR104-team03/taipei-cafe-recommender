@@ -5,7 +5,7 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - '4.line_api/**'  # 只有當這個資料夾變動時才觸發
+      - '4.line_api_app/**'  # 只有當這個資料夾變動時才觸發
   workflow_dispatch:
 
 env:
@@ -23,7 +23,7 @@ jobs:
     # 這樣後面的 docker build . 才會抓到正確的 Dockerfile
     defaults:
       run:
-        working-directory: ./4.line_api
+        working-directory: ./4.line_api_app
 
     steps:
       - uses: actions/checkout@v4
