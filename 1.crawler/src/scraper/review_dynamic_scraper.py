@@ -213,23 +213,28 @@ def scrape_reviews_production(driver, p_name, p_addr, p_id, batch_id, last_seen_
         print(f"     抓取異常: {e}")
         return [], [], None
 
-# --- 4. 主程式執行入口 ---
-if __name__ == "__main__":
-    # 環境變數設定
+# --- 4. 模組化入口 (被 main.py 呼叫) ---
+def run(region="A-2", total_shards=1, shard_index=0):
+    """
+    執行 Google 評論爬取任務 (支援分片)
+    """
     BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
-    REGION = os.getenv("SCAN_REGION", "A-2")
     ENV_LIMIT = os.getenv("SCAN_LIMIT")
     SCAN_LIMIT = int(ENV_LIMIT) if (ENV_LIMIT and ENV_LIMIT.isdigit()) else None
     
     MY_BATCH_ID = f"BATCH_{datetime.now().strftime('%m%d_%H%M')}"
     
-    # GCS 路徑定義
-    INPUT_PATH = f"raw/store/base.csv" # 讀取店家總表
-    REVIEW_OUTPUT = f"raw/comments/reviews_total.csv" # 評論大表
-    TAG_OUTPUT = f"raw/tag/tags_review.csv" # 評論標籤表
-    CHECKPOINT_FILE = f"raw/checkpoint/sync_checkpoint_{REGION}.csv"
+    # 路徑定義
+    INPUT_PATH = "raw/store/base.csv"
+    
+    # [修改點 1] 輸出檔名加入分片後綴
+    REVIEW_PART_OUTPUT = f"raw/comments/parts/reviews_{region}_part_{shard_index}.csv"
+    TAG_PART_OUTPUT = f"raw/tag/parts/tags_review_{region}_part_{shard_index}.csv"
+    
+    # [修改點 2] Checkpoint 也要分開，避免互相覆蓋進度
+    CHECKPOINT_FILE = f"raw/checkpoint/checkpoint_reviews_{region}_part_{shard_index}.csv"
 
-    print(f" [Review Scraper] 啟動 | 區域: {REGION} | 限制: {SCAN_LIMIT}")
+    print(f" [Google Reviews] 模組啟動 | 分片 {shard_index + 1}/{total_shards} | 區域: {region}")
 
     # 1. 讀取店家名單
     full_df = load_csv_from_gcs(BUCKET_NAME, INPUT_PATH)
@@ -237,43 +242,49 @@ if __name__ == "__main__":
         print(" 找不到店家總表 (base.csv)")
         sys.exit(1)
 
-    # 簡單過濾 (之後可加入更複雜的區域篩選邏輯)
-    # 這裡假設 base.csv 有 location 或其他欄位可篩選，目前先全跑或用 LIMIT
-    stores_df = full_df 
-    if SCAN_LIMIT: stores_df = stores_df.head(SCAN_LIMIT)
+    # [修改點 3] 執行分片切分
+    # 這裡的邏輯是：只取「餘數等於當前 index」的列
+    stores_df = full_df[full_df.index % total_shards == shard_index].copy()
+    print(f" 本分片分配到 {len(stores_df)} 筆任務 (總數 {len(full_df)})")
+
+    if SCAN_LIMIT: 
+        stores_df = stores_df.head(SCAN_LIMIT)
+        print(f" 測試模式: 僅執行前 {SCAN_LIMIT} 筆")
 
     # 2. 讀取 Checkpoint
     checkpoint_df = load_csv_from_gcs(BUCKET_NAME, CHECKPOINT_FILE)
     if checkpoint_df is None:
         checkpoint_df = pd.DataFrame(columns=['place_id', 'latest_review_id', 'last_sync_at'])
 
-    # 3. 初始化 Selenium 選項
+    # 3. 初始化 Selenium
     chrome_options = Options()
-    chrome_options.add_argument("--headless") # 雲端強制無頭
+    chrome_options.add_argument("--headless") 
     chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage") # 關鍵: 防止記憶體崩潰
+    chrome_options.add_argument("--disable-dev-shm-usage") 
     chrome_options.add_argument("--window-size=900,1000")
     chrome_options.add_argument("--lang=zh-TW")
+    # 禁止圖片 (加速)
+    prefs = {"profile.managed_default_content_settings.images": 2}
+    chrome_options.add_experimental_option("prefs", prefs)
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     
-    batch_size = 3 # 批次重啟頻率
+    batch_size = 3 
     temp_reviews = []
     temp_tags = []
 
     try:
-        for i, (idx, row) in enumerate(stores_df.iterrows(), 1):
+        # 使用 enumerate 重新計數
+        for i, (orig_idx, row) in enumerate(stores_df.iterrows(), 1):
             
-            # --- 資源管控：定期重啟瀏覽器 ---
+            # --- 資源管控 ---
             if (i - 1) % batch_size == 0 and i > 1:
-                print(f" 釋放記憶體，重啟瀏覽器 (第 {i} 筆)...")
                 driver.quit()
                 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
 
             print(f"[{i}/{len(stores_df)}] {row['name']}")
             
-            # 取得上次的 review_id (增量更新用)
             last_id = None
             if not checkpoint_df.empty and row['place_id'] in checkpoint_df['place_id'].values:
                 last_id = checkpoint_df.loc[checkpoint_df['place_id'] == row['place_id'], 'latest_review_id'].values[0]
@@ -284,71 +295,74 @@ if __name__ == "__main__":
             if reviews: temp_reviews.extend(reviews)
             if tags: temp_tags.extend(tags)
 
-            # 更新 Checkpoint (記憶體中)
+            # 更新 Checkpoint (記憶體)
             if new_top_id:
                 new_cp = pd.DataFrame([{
                     'place_id': row['place_id'], 
                     'latest_review_id': new_top_id, 
                     'last_sync_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }])
-                # 移除舊紀錄，加入新紀錄
                 checkpoint_df = checkpoint_df[checkpoint_df['place_id'] != row['place_id']]
                 checkpoint_df = pd.concat([checkpoint_df, new_cp], ignore_index=True)
 
-            time.sleep(random.uniform(2, 4))
+            time.sleep(random.uniform(1, 3))
 
             # --- 中途存檔 (Checkpointing) ---
-            # 每 3 筆存一次，避免全部跑完才存風險太高
             if i % batch_size == 0:
-                print(f" 執行中途存檔...")
+                print(f" 中途寫入分片檔...")
                 
-                # A. 存評論
+                # A. 存評論 (Append Mode)
                 if temp_reviews:
-                    current_reviews_df = load_csv_from_gcs(BUCKET_NAME, REVIEW_OUTPUT)
+                    current_reviews_df = load_csv_from_gcs(BUCKET_NAME, REVIEW_PART_OUTPUT)
                     new_reviews_df = pd.DataFrame(temp_reviews)
+                    
                     if current_reviews_df is not None:
                         final_reviews = pd.concat([current_reviews_df, new_reviews_df], ignore_index=True)
                     else:
                         final_reviews = new_reviews_df
-                    # 去重
-                    final_reviews = final_reviews.drop_duplicates(subset=['place_id', 'review_id'])
-                    upload_df_to_gcs(final_reviews, BUCKET_NAME, REVIEW_OUTPUT)
-                    temp_reviews = [] # 清空暫存
+                    
+                    final_reviews.drop_duplicates(subset=['place_id', 'review_id'], inplace=True)
+                    upload_df_to_gcs(final_reviews, BUCKET_NAME, REVIEW_PART_OUTPUT)
+                    temp_reviews = [] 
 
-                # B. 存標籤
+                # B. 存標籤 (Append Mode)
                 if temp_tags:
-                    current_tags_df = load_csv_from_gcs(BUCKET_NAME, TAG_OUTPUT)
+                    current_tags_df = load_csv_from_gcs(BUCKET_NAME, TAG_PART_OUTPUT)
                     new_tags_df = pd.DataFrame(temp_tags)
+                    
                     if current_tags_df is not None:
                         final_tags = pd.concat([current_tags_df, new_tags_df], ignore_index=True)
                     else:
                         final_tags = new_tags_df
-                    final_tags = final_tags.drop_duplicates(subset=['place_id', 'Tag'])
-                    upload_df_to_gcs(final_tags, BUCKET_NAME, TAG_OUTPUT)
-                    temp_tags = [] # 清空暫存
+                        
+                    final_tags.drop_duplicates(subset=['place_id', 'Tag'], inplace=True)
+                    upload_df_to_gcs(final_tags, BUCKET_NAME, TAG_PART_OUTPUT)
+                    temp_tags = [] 
 
-                # C. 存 Checkpoint
+                # C. 存 Checkpoint (Overwrite Mode)
                 upload_df_to_gcs(checkpoint_df, BUCKET_NAME, CHECKPOINT_FILE)
 
     finally:
         driver.quit()
         print(" 任務結束，瀏覽器已關閉。")
         
-        # 最後一次存檔 (防止最後幾筆沒存到)
+        # --- 最終存檔 ---
         if temp_reviews or temp_tags:
             print(f" 執行最終存檔...")
             if temp_reviews:
-                current_reviews_df = load_csv_from_gcs(BUCKET_NAME, REVIEW_OUTPUT)
+                current_reviews_df = load_csv_from_gcs(BUCKET_NAME, REVIEW_PART_OUTPUT)
                 new_reviews_df = pd.DataFrame(temp_reviews)
                 final_reviews = pd.concat([current_reviews_df, new_reviews_df], ignore_index=True) if current_reviews_df is not None else new_reviews_df
-                upload_df_to_gcs(final_reviews.drop_duplicates(subset=['place_id', 'review_id']), BUCKET_NAME, REVIEW_OUTPUT)
+                final_reviews.drop_duplicates(subset=['place_id', 'review_id'], inplace=True)
+                upload_df_to_gcs(final_reviews, BUCKET_NAME, REVIEW_PART_OUTPUT)
             
             if temp_tags:
-                current_tags_df = load_csv_from_gcs(BUCKET_NAME, TAG_OUTPUT)
+                current_tags_df = load_csv_from_gcs(BUCKET_NAME, TAG_PART_OUTPUT)
                 new_tags_df = pd.DataFrame(temp_tags)
                 final_tags = pd.concat([current_tags_df, new_tags_df], ignore_index=True) if current_tags_df is not None else new_tags_df
-                upload_df_to_gcs(final_tags.drop_duplicates(subset=['place_id', 'Tag']), BUCKET_NAME, TAG_OUTPUT)
+                final_tags.drop_duplicates(subset=['place_id', 'Tag'], inplace=True)
+                upload_df_to_gcs(final_tags, BUCKET_NAME, TAG_PART_OUTPUT)
 
             upload_df_to_gcs(checkpoint_df, BUCKET_NAME, CHECKPOINT_FILE)
 
-    print(" 所有作業完成！")
+    print(" Google Reviews 分片任務完成！")
