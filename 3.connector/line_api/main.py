@@ -40,35 +40,64 @@ def recommend_cafes(
 ):
     try:
         db = db_client.get_db()
-        collection = db['cafes']
         
-        # 使用 MongoDB $geoNear 同時完成「距離計算」與「近距排序」
-        pipeline = [
-            {
-                "$geoNear": {
-                    "near": { "type": "Point", "coordinates": [lng, lat] },
-                    "distanceField": "dist_meters", # 計算出的距離放入此欄位
-                    "maxDistance": 3000,           # 搜尋範圍 3公里
-                    "spherical": True
-                }
+        # 1. 取得該使用者的黑名單 (不喜歡的店)
+        blacklist_ids = []
+        if user_id:
+            blacklist_logs = list(db['interaction_logs'].find(
+                {"user_id": user_id, "action": "NO"},
+                {"cafe_id": 1}
+            ))
+            blacklist_ids = [log['cafe_id'] for log in blacklist_logs]
+
+        # 2. 建立 Pipeline
+        pipeline = []
+
+        # (A) 地理位置搜尋 (基礎)
+        pipeline.append({
+            "$geoNear": {
+                "near": { "type": "Point", "coordinates": [lng, lat] },
+                "distanceField": "dist_meters",
+                "maxDistance": 3000, 
+                "spherical": True
             }
-        ]
-        
-        # 關鍵字搜尋 (tag 篩選)
-        if tag:
-            pipeline.append({ 
-                "$match": { 
-                    "$or": [
-                        { "attributes.types": tag },
-                        { "ai_tags.tag": tag },
-                        { "original_name": { "$regex": tag, "$options": "i" } }
-                    ]
-                } 
+        })
+
+        # (B) 過濾黑名單
+        if blacklist_ids:
+            pipeline.append({
+                "$match": { "place_id": { "$nin": blacklist_ids } }
             })
 
+        # (C) 多欄位模糊搜尋 (強化搜尋深度)
+        if tag:
+            pipeline.append({
+                "$match": {
+                    "$or": [
+                        { "original_name": { "$regex": tag, "$options": "i" } },
+                        { "attributes.types": { "$regex": tag, "$options": "i" } },
+                        { "ai_tags.tag": { "$regex": tag, "$options": "i" } }
+                    ]
+                }
+            })
+
+        # (D) 權重排序：評分 / (距離/100 + 1) -> 越高分排越前
+        pipeline.append({
+            "$addFields": {
+                "search_score": {
+                    "$divide": [
+                        { "$ifNull": ["$rating", 0] }, 
+                        { "$add": [{ "$divide": ["$dist_meters", 100] }, 1] }
+                    ]
+                }
+            }
+        })
+        pipeline.append({ "$sort": { "search_score": -1 } })
         pipeline.append({ "$limit": 10 })
-        results = list(collection.aggregate(pipeline))
+
+        results = list(db['cafes'].aggregate(pipeline))
         
+        # 3. 格式化回傳... (保持你原本的 formatted_data 邏輯)
         # 格式轉換，確保符合前端規格
         formatted_data = []
         for r in results:
@@ -81,18 +110,19 @@ def recommend_cafes(
                 "rating": r.get("rating", r.get("attributes", {}).get("rating", 0)),
                 "total_ratings": r.get("user_ratings_total", 0)
             })
-            
+        
         return {"data": formatted_data}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # 2. 儲存使用者位置 (Update Location)
 @app.post("/users/{user_id}/location")
 def update_user_location(user_id: str, loc: UserLocation):
     try:
         db = db_client.get_db()
-        collection = db['users_location']
+        collection = db['users']
         
         collection.update_one(
             {"user_id": user_id},
@@ -111,7 +141,7 @@ def update_user_location(user_id: str, loc: UserLocation):
 @app.get("/users/{user_id}/location")
 def get_user_location(user_id: str):
     db = db_client.get_db()
-    user_loc = db['users_location'].find_one({"user_id": user_id})
+    user_loc = db['users'].find_one({"user_id": user_id})
     
     if not user_loc:
         raise HTTPException(status_code=404, detail="Location not found")

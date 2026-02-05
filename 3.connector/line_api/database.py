@@ -2,26 +2,50 @@
 ### 以後任何檔案要用資料庫，只要 import 這個檔案就好
 
 
-# coffee_api/database.py
-import os
+# database.py
 from pymongo import MongoClient
+import certifi
+import os
+from dotenv import load_dotenv
 
-# 優先讀取雲端環境變數，本機測試則預設為 localhost
-# 部署到 Cloud Run 時，我們會設定這個 MONGO_URL
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
+# 1. 載入環境變數
+load_dotenv()
 
-class DatabaseClient:
-    def __init__(self):
-        self.client = None
-    
+class Database:
+    client: MongoClient = None
+
     def connect(self):
-        self.client = MongoClient(MONGO_URL)
-    
-    def get_db(self):
-        return self.client['coffee_db'] # 資料庫名稱
-    
+        # 這裡直接讀取環境變數，安全又方便
+        mongo_url = os.getenv("MONGODB_URL")
+        
+        if not mongo_url:
+            print("❌ 錯誤：找不到 MONGODB_URL 環境變數！請檢查 .env 檔案。")
+            return
+
+        self.client = MongoClient(mongo_url, tlsCAFile=certifi.where())
+        print("✅ MongoDB 連線成功 (使用安全連線)")
+
     def close(self):
         if self.client:
             self.client.close()
+            print("🛑 MongoDB 連線已關閉")
 
-db_client = DatabaseClient()
+    def get_db(self):
+        # 回傳你的資料庫名稱
+        return self.client['coffee_db']
+
+# 建立實體
+db_client = Database()
+
+
+# if __name__ == "__main__":
+#     print("--- 開始執行 database.py 自我測試 ---")
+#     db_client.connect()
+    
+#     # 順便測試一下拿資料庫
+#     if db_client.client:
+#         db = db_client.get_db()
+#         print(f"目前連線的資料庫名稱: {db.name}")
+#         db_client.close()
+    
+#     print("--- 測試結束 ---")
