@@ -155,10 +155,7 @@ def scrape_reviews_production(driver, p_name, p_addr, p_id, batch_id, last_seen_
                     # 真的沒有排序按鈕，代表真的失敗了
                     print(f" ❌ {p_name} 無法進入評論區 (且無排序按鈕)。")
                     page_source = driver.page_source
-                    print(f" 🕵️ 正在截圖保留犯罪現場...")
-
-                    BUCKET_NAME = "tjr104-cafe-datalake"
-                    save_debug_screenshot(driver, p_name, BUCKET_NAME)
+                    
                     if "robot" in page_source or "機器人" in page_source or "unusual traffic" in page_source:
                         print(" 🚨 嚴重警告：Google 偵測到異常流量 (CAPTCHA 阻擋)！")
                     return [], [], None
