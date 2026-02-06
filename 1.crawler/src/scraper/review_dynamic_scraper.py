@@ -95,8 +95,6 @@ def scrape_reviews_production(driver, p_name, p_addr, p_id, batch_id, last_seen_
             driver.execute_script("arguments[0].click();", list_items[0])
             time.sleep(4.5)
 
-        wait = WebDriverWait(driver, 30)
-        
         # 點擊「評論」頁籤
         try:
             # 使用多種可能的特徵來尋找「評論」按鈕
@@ -114,9 +112,16 @@ def scrape_reviews_production(driver, p_name, p_addr, p_id, batch_id, last_seen_
 
         except Exception as e:
             # 補救機制：如果找不到按鈕，嘗試搜尋 URL 是否已經包含 reviews 關鍵字
-            if "reviews" not in driver.current_url:
-                print(f"  {p_name} 找不到評論按鈕，目前網址: {driver.current_url[:50]}...")
-                return [], [], None
+            try:
+                    # 快速檢查一下是否有「排序」按鈕 (給它 3 秒)
+                    quick_wait = WebDriverWait(driver, 3)
+                    quick_wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//span[text()='排序']]")))
+                    print(f" ⚠️ {p_name} 點擊報錯但已檢測到評論區，繼續執行！")
+                    # 這裡不 return，讓它繼續往下跑 B 步驟 (排序)
+            except:
+                    # 真的沒有排序按鈕，代表真的失敗了
+                    print(f" ❌ {p_name} 無法進入評論區 (且無排序按鈕)。")
+                    return [], [], None
             
         # A. 抓取評論標籤 (Tag)
         try:
