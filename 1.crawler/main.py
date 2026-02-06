@@ -47,10 +47,25 @@ def main():
 
     args = parser.parse_args()
 
+    # Cloud Run Job 會自動注入這兩個變數
+    env_task_index = os.environ.get('CLOUD_RUN_TASK_INDEX')
+    env_task_count = os.environ.get('CLOUD_RUN_TASK_COUNT')
+
+    if env_task_index is not None and env_task_count is not None:
+        # 如果在 Cloud Run 上跑，使用環境變數覆蓋
+        current_shard = int(env_task_index)
+        total_shards = int(env_task_count)
+        source_mode = "Cloud Run Autoscaling"
+    else:
+        # 如果在本地跑，使用指令參數
+        current_shard = args.shard_index
+        total_shards = args.total_shards
+        source_mode = "Manual CLI Args"
+
     # 顯示當前任務資訊
     logger.info("="*50)
     logger.info(f" 啟動任務: {args.task.upper()}")
-    logger.info(f"  參數配置: Region={args.region} | Shard={args.shard_index + 1}/{args.total_shards}")
+    logger.info(f" 參數配置: Region={args.region} | Shard={current_shard + 1}/{total_shards}")
     logger.info("="*50)
 
     try:
@@ -70,37 +85,34 @@ def main():
         # Phase 2: 挖掘期 (支援分片平行處理)
         # ==========================================
         elif args.task == "tags":
-            logger.info(f"呼叫 [Official Tags] (Shard {args.shard_index})...")
-            official_tag_scraper.run(
-                region=args.region,
-                total_shards=args.total_shards, 
-                shard_index=args.shard_index
-            )
+                    logger.info(f"呼叫 [Official Tags] (Shard {current_shard})...")
+                    official_tag_scraper.run(
+                        region=args.region,
+                        total_shards=total_shards,   # 使用計算後的變數
+                        shard_index=current_shard    # 使用計算後的變數
+                    )
 
         elif args.task == "reviews":
-            logger.info(f"呼叫 [Google Reviews] (Shard {args.shard_index})...")
+            logger.info(f"呼叫 [Google Reviews] (Shard {current_shard})...")
             review_dynamic_scraper.run(
                 region=args.region,
-                total_shards=args.total_shards, 
-                shard_index=args.shard_index
+                total_shards=total_shards,   # 使用計算後的變數
+                shard_index=current_shard    # 使用計算後的變數
             )
             
         elif args.task == "ifoodie":
-            logger.info(f"呼叫 [iFoodie Reviews] (Shard {args.shard_index})...")
+            logger.info(f"呼叫 [iFoodie Reviews] (Shard {current_shard})...")
             ifoodie_review_scraper.run(
                 region=args.region,
-                total_shards=args.total_shards, 
-                shard_index=args.shard_index
+                total_shards=total_shards,   # 使用計算後的變數
+                shard_index=current_shard    # 使用計算後的變數
             )
 
-        # ==========================================
-        # Phase 3: 合併期 (單機跑)
-        # ==========================================
+        # Phase 3: 合併期
         elif args.task == "merge":
             logger.info("呼叫 [Data Merger]...")
-            # 這裡之後會呼叫 merger.run()
-            logger.warning(" 合併功能尚未實作 (Pending Implementation)")
             # merger.run(region=args.region)
+            logger.warning("合併功能尚未實作")
 
         logger.info(f" 任務 {args.task} 執行完畢！")
 
