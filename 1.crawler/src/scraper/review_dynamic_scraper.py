@@ -70,6 +70,39 @@ def split_reviewer_info(level_text):
     review_count = next((p for p in parts if "則評論" in p), "0 則評論")
     return identity, review_count
 
+
+def save_debug_screenshot(driver, p_name, bucket_name):
+    """
+    [除錯神器] 截圖當前畫面並上傳到 GCS
+    """
+    try:
+        # 1. 產生檔名 (加上時間戳記，避免檔名重複)
+        timestamp = datetime.now().strftime('%H%M%S')
+        safe_name = str(p_name).replace(" ", "_").replace("/", "_") # 檔名清洗
+        filename = f"error_{safe_name}_{timestamp}.png"
+        
+        # Cloud Run 只能寫入 /tmp，這點非常重要！
+        local_path = f"/tmp/{filename}"
+        gcs_path = f"raw/debug_screenshots/{filename}" # 存在 GCS 的資料夾
+
+        # 2. Selenium 截圖
+        driver.save_screenshot(local_path)
+        print(f" 📸 已截圖至容器暫存區: {local_path}")
+
+        # 3. 上傳 GCS
+        client = get_gcs_client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(gcs_path)
+        blob.upload_from_filename(local_path)
+        print(f" ☁️ 截圖已上傳: gs://{bucket_name}/{gcs_path}")
+
+        # 4. 刪除暫存檔 (節省容器記憶體)
+        os.remove(local_path)
+
+    except Exception as e:
+        print(f" ⚠️ 截圖上傳失敗: {e}")
+
+
 # --- 3. 核心抓取邏輯 (Web Scraper) ---
 def scrape_reviews_production(driver, p_name, p_addr, p_id, batch_id, last_seen_id=None):
     wait = WebDriverWait(driver, 25)
@@ -121,6 +154,13 @@ def scrape_reviews_production(driver, p_name, p_addr, p_id, batch_id, last_seen_
             except:
                     # 真的沒有排序按鈕，代表真的失敗了
                     print(f" ❌ {p_name} 無法進入評論區 (且無排序按鈕)。")
+                    page_source = driver.page_source
+                    print(f" 🕵️ 正在截圖保留犯罪現場...")
+
+                    BUCKET_NAME = "tjr104-cafe-datalake"
+                    save_debug_screenshot(driver, p_name, BUCKET_NAME)
+                    if "robot" in page_source or "機器人" in page_source or "unusual traffic" in page_source:
+                        print(" 🚨 嚴重警告：Google 偵測到異常流量 (CAPTCHA 阻擋)！")
                     return [], [], None
             
         # A. 抓取評論標籤 (Tag)
