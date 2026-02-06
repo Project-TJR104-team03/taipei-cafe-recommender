@@ -93,17 +93,31 @@ def scrape_reviews_production(driver, p_name, p_addr, p_id, batch_id, last_seen_
         list_items = driver.find_elements(By.CLASS_NAME, "hfpxzc")
         if list_items:
             driver.execute_script("arguments[0].click();", list_items[0])
-            time.sleep(4)
+            time.sleep(4.5)
 
+        wait = WebDriverWait(driver, 30)
+        
         # 點擊「評論」頁籤
         try:
-            review_tab = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(., '評論')]")))
-            review_tab.click()
+            # 使用多種可能的特徵來尋找「評論」按鈕
+            review_tab_xpath = (
+                "//button[contains(@aria-label, '評論') or "
+                "contains(., '評論') or "
+                "@role='tab' and contains(., '評論')]"
+            )
+            # 增加等待時間並確保元素可點擊
+            review_tab = wait.until(EC.element_to_be_clickable((By.XPATH, review_tab_xpath)))
+            
+            # 使用 JavaScript 點擊，避免被其他透明元素遮擋（Cloud Run 常見問題）
+            driver.execute_script("arguments[0].click();", review_tab)
             time.sleep(3)
-        except:
-            print(f"  {p_name} 找不到評論按鈕，可能無評論。")
-            return [], [], None
 
+        except Exception as e:
+            # 補救機制：如果找不到按鈕，嘗試搜尋 URL 是否已經包含 reviews 關鍵字
+            if "reviews" not in driver.current_url:
+                print(f"  {p_name} 找不到評論按鈕，目前網址: {driver.current_url[:50]}...")
+                return [], [], None
+            
         # A. 抓取評論標籤 (Tag)
         try:
             tag_elements = driver.find_elements(By.CLASS_NAME, "e2moi")
