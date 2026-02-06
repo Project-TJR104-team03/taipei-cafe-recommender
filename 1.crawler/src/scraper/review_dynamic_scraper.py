@@ -95,6 +95,8 @@ def scrape_reviews_production(driver, p_name, p_addr, p_id, batch_id, last_seen_
             driver.execute_script("arguments[0].click();", list_items[0])
             time.sleep(4.5)
 
+        wait = WebDriverWait(driver, 30)
+        
         # 點擊「評論」頁籤
         try:
             # 使用多種可能的特徵來尋找「評論」按鈕
