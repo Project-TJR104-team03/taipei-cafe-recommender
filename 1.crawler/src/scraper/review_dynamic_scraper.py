@@ -2,53 +2,103 @@ import sys
 import os
 import time
 import random
-import pandas as pd
 import io
+import pandas as pd
+import logging
 from datetime import datetime
 from dateutil.relativedelta import relativedelta
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from bs4 import BeautifulSoup
-from google.cloud import storage
-from selenium.common.exceptions import TimeoutException, WebDriverException
 
-# --- 1. 雲端工具函式 (新增) ---
+# Google Cloud
+from google.cloud import storage
+
+# 設定 Logger
+logger = logging.getLogger("ReviewScraper")
+logger.setLevel(logging.INFO)
+
+# --- 1. GCS I/O 工具函式 ---
 def get_gcs_client():
     return storage.Client()
 
-def load_csv_from_gcs(bucket_name, blob_name):
-    """從 GCS 讀取 CSV 轉為 DataFrame，若無則回傳 None"""
+def upload_screenshot_to_gcs(driver, bucket_name, place_id, step_name):
+    """  [除錯神器] 截圖並上傳到 GCS """
     try:
+        screenshot_bytes = driver.get_screenshot_as_png()
+        blob_name = f"debug_screenshots/{place_id}_{step_name}.png"
+        
         client = get_gcs_client()
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
-        if not blob.exists():
-            print(f" GCS 檔案不存在: gs://{bucket_name}/{blob_name}")
-            return None
-        content = blob.download_as_string()
-        return pd.read_csv(io.BytesIO(content))
+        blob.upload_from_string(screenshot_bytes, content_type='image/png')
+        logger.info(f" 已截圖: gs://{bucket_name}/{blob_name}")
     except Exception as e:
-        print(f" 讀取 GCS 失敗: {e}")
+        logger.error(f" 截圖上傳失敗: {e}")
+
+def load_all_csvs_from_gcs(bucket_name, prefix):
+    client = get_gcs_client()
+    bucket = client.bucket(bucket_name)
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    csv_blobs = [b for b in blobs if b.name.endswith('.csv')]
+    
+    if not csv_blobs:
+        logger.error(f" 在 gs://{bucket_name}/{prefix} 找不到任何 CSV 檔案")
         return None
 
-def upload_df_to_gcs(df, bucket_name, blob_name):
-    """將 DataFrame 上傳回 GCS"""
+    logger.info(f" 發現 {len(csv_blobs)} 個分片檔，開始下載合併...")
+    df_list = []
+    for blob in csv_blobs:
+        try:
+            content = blob.download_as_string()
+            df = pd.read_csv(io.BytesIO(content))
+            df.columns = df.columns.str.strip()
+            df_list.append(df)
+        except Exception as e:
+            logger.warning(f" 無法讀取 {blob.name}: {e}")
+            
+    if df_list:
+        full_df = pd.concat(df_list, ignore_index=True)
+        return full_df
+    return None
+
+def save_csv_to_gcs(df, bucket_name, blob_name):
     try:
         client = get_gcs_client()
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
+        
+        if blob.exists():
+            old_content = blob.download_as_string()
+            old_df = pd.read_csv(io.BytesIO(old_content))
+            combined_df = pd.concat([old_df, df], ignore_index=True)
+            combined_df = combined_df.drop_duplicates()
+        else:
+            combined_df = df
+            
         csv_buffer = io.StringIO()
-        df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
+        combined_df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
         blob.upload_from_string(csv_buffer.getvalue(), content_type='text/csv')
-        print(f" 已儲存至: gs://{bucket_name}/{blob_name}")
+        logger.info(f" 已上傳至: gs://{bucket_name}/{blob_name}")
     except Exception as e:
-        print(f" 上傳 GCS 失敗: {e}")
+        logger.error(f" GCS 存檔失敗 {blob_name}: {e}")
+
+def load_checkpoint_from_gcs(bucket_name, blob_name):
+    try:
+        client = get_gcs_client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        if blob.exists():
+            content = blob.download_as_string()
+            return pd.read_csv(io.BytesIO(content))
+    except Exception as e:
+        pass
+    return pd.DataFrame(columns=['place_id', 'latest_review_id', 'last_sync_at'])
 
 # --- 2. 輔助解析函式 ---
 def parse_google_date(relative_date_text):
@@ -70,355 +120,271 @@ def split_reviewer_info(level_text):
     review_count = next((p for p in parts if "則評論" in p), "0 則評論")
     return identity, review_count
 
-
-def save_debug_screenshot(driver, p_name, bucket_name):
-    """
-    [除錯神器] 截圖當前畫面並上傳到 GCS
-    """
-    try:
-        # 1. 產生檔名 (加上時間戳記，避免檔名重複)
-        timestamp = datetime.now().strftime('%H%M%S')
-        safe_name = str(p_name).replace(" ", "_").replace("/", "_") # 檔名清洗
-        filename = f"error_{safe_name}_{timestamp}.png"
-        
-        # Cloud Run 只能寫入 /tmp，這點非常重要！
-        local_path = f"/tmp/{filename}"
-        gcs_path = f"raw/debug_screenshots/{filename}" # 存在 GCS 的資料夾
-
-        # 2. Selenium 截圖
-        driver.save_screenshot(local_path)
-        print(f" 📸 已截圖至容器暫存區: {local_path}")
-
-        # 3. 上傳 GCS
-        client = get_gcs_client()
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(gcs_path)
-        blob.upload_from_filename(local_path)
-        print(f" ☁️ 截圖已上傳: gs://{bucket_name}/{gcs_path}")
-
-        # 4. 刪除暫存檔 (節省容器記憶體)
-        os.remove(local_path)
-
-    except Exception as e:
-        print(f" ⚠️ 截圖上傳失敗: {e}")
-
-
-# --- 3. 核心抓取邏輯 (Web Scraper) ---
-def scrape_reviews_production(driver, p_name, p_addr, p_id, batch_id, last_seen_id=None):
-    wait = WebDriverWait(driver, 25)
-    target_cutoff = datetime.now() - relativedelta(years=3) # 只抓最近 3 年
+# --- 3. 核心抓取邏輯 ---
+def scrape_reviews_by_url(driver, url, p_name_placeholder, p_id, batch_id, last_seen_id=None, bucket_name=None):
+    wait = WebDriverWait(driver, 15) # 縮短等待時間，加快除錯
+    target_cutoff = datetime.now() - relativedelta(years=3) 
     review_results = []
     tag_records = []
     new_top_id = None
+    real_store_name = p_name_placeholder 
 
     try:
-        query = f"{p_name} {str(p_addr)[:10]}"
-        driver.get("https://www.google.com/maps")
-        time.sleep(1.5)
+        if not url or str(url) == 'nan':
+            return [], [], None
 
-        # 搜尋輸入
-        search_box = wait.until(EC.element_to_be_clickable((By.NAME, "q")))
-        search_box.clear()
-        search_box.send_keys(query + Keys.ENTER)
-        time.sleep(5)
+        driver.get(url)
+        time.sleep(random.uniform(3.0, 5.0)) # 等久一點，讓 Cloud Run 渲染
 
-        # 列表點擊補救 (防止直接進入搜尋結果列表而非商家詳情)
-        list_items = driver.find_elements(By.CLASS_NAME, "hfpxzc")
-        if list_items:
-            driver.execute_script("arguments[0].click();", list_items[0])
-            time.sleep(4.5)
+        # 登入偵測
+        if "accounts.google.com" in driver.current_url or "signin" in driver.current_url:
+            logger.warning(f"  {real_store_name} 觸發強制登入")
+            # 截圖確認
+            if bucket_name: upload_screenshot_to_gcs(driver, bucket_name, p_id, "login_blocked")
+            return [], [], None
 
-        # 點擊「評論」頁籤
+        # 嘗試關閉彈窗
         try:
-            # 使用多種可能的特徵來尋找「評論」按鈕
-            review_tab_xpath = (
-                "//button[contains(@aria-label, '評論') or "
-                "contains(., '評論') or "
-                "@role='tab' and contains(., '評論')]"
-            )
-            # 增加等待時間並確保元素可點擊
-            review_tab = wait.until(EC.element_to_be_clickable((By.XPATH, review_tab_xpath)))
-            
-            # 使用 JavaScript 點擊，避免被其他透明元素遮擋（Cloud Run 常見問題）
-            driver.execute_script("arguments[0].click();", review_tab)
-            time.sleep(3)
+            dismiss_btns = driver.find_elements(By.XPATH, "//span[contains(text(), '不用了') or contains(text(), 'Not now')]")
+            if dismiss_btns:
+                driver.execute_script("arguments[0].click();", dismiss_btns[0])
+                time.sleep(1)
+        except: pass
 
-        except Exception as e:
-            # 補救機制：如果找不到按鈕，嘗試搜尋 URL 是否已經包含 reviews 關鍵字
-            try:
-                    # 快速檢查一下是否有「排序」按鈕 (給它 3 秒)
-                    quick_wait = WebDriverWait(driver, 3)
-                    quick_wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//span[text()='排序']]")))
-                    print(f" ⚠️ {p_name} 點擊報錯但已檢測到評論區，繼續執行！")
-                    # 這裡不 return，讓它繼續往下跑 B 步驟 (排序)
-            except:
-                    # 真的沒有排序按鈕，代表真的失敗了
-                    print(f" ❌ {p_name} 無法進入評論區 (且無排序按鈕)。")
-                    page_source = driver.page_source
-                    
-                    if "robot" in page_source or "機器人" in page_source or "unusual traffic" in page_source:
-                        print(" 🚨 嚴重警告：Google 偵測到異常流量 (CAPTCHA 阻擋)！")
-                    return [], [], None
+        # 抓取真實店名
+        try:
+            h1_element = wait.until(EC.presence_of_element_located((By.TAG_NAME, "h1")))
+            if h1_element.text.strip():
+                real_store_name = h1_element.text.strip()
+        except: pass
+
+        # --- 尋找評論按鈕 (最容易失敗的地方) ---
+        found_btn = None
+        try:
+            # 擴充 XPATH，增加相容性
+            xpath = "//*[self::button or self::div or self::span or self::a][contains(text(), '評論') or contains(text(), 'Reviews') or contains(@aria-label, '評論') or contains(@aria-label, 'Reviews')]"
+            candidates = driver.find_elements(By.XPATH, xpath)
+            for elm in candidates:
+                if elm.is_displayed() and len(elm.text.strip()) < 15:
+                    found_btn = elm
+                    break
             
-        # A. 抓取評論標籤 (Tag)
+            if found_btn:
+                driver.execute_script("arguments[0].click();", found_btn)
+                time.sleep(random.uniform(3.0, 4.0))
+            else:
+                # 如果找不到按鈕，且沒在評論頁面，那就是失敗了 -> 截圖！
+                if "reviews" not in driver.current_url:
+                    logger.warning(f" {real_store_name} 找不到評論按鈕，截圖存證...")
+                    if bucket_name: upload_screenshot_to_gcs(driver, bucket_name, p_id, "no_review_button")
+                    return [], [], None
+        except Exception as e:
+            logger.error(f"按鈕點擊異常: {e}")
+            if bucket_name: upload_screenshot_to_gcs(driver, bucket_name, p_id, "button_error")
+            return [], [], None
+
+        # --- A. 抓取標籤 ---
         try:
             tag_elements = driver.find_elements(By.CLASS_NAME, "e2moi")
-            blacklist = ["所有評論", "查看另外", "個主題"]
+            blacklist_keywords = ["所有評論", "查看另外", "個主題"]
             for tag in tag_elements:
                 label = tag.get_attribute("aria-label")
-                if label and not any(item in label for item in blacklist):
-                    clean_tag = label.split('(')[0].strip()
+                if label and not any(k in label for k in blacklist_keywords):
                     tag_records.append({
-                        "name": p_name, "place_id": p_id,
-                        "Tag": clean_tag, "Tag_id": "PENDING",
+                        "name": real_store_name, 
+                        "place_id": p_id,
+                        "Tag": label.split('(')[0].strip(), 
+                        "Tag_id": "PENDING",
                         "data_source": "google評論標籤"
                     })
-            if tag_records:
-                print(f"    找到 {len(tag_records)} 個評論標籤")
-        except: 
-            pass
+        except: pass
 
-        # B. 排序：切換至「最新」
+        # --- B. 排序 ---
         try:
-            sort_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//span[text()='排序']]")))
+            sort_btn = wait.until(EC.presence_of_element_located((By.XPATH, "//button[.//span[text()='排序' or text()='Sort']]")))
             driver.execute_script("arguments[0].click();", sort_btn)
-            time.sleep(1.5)
-            latest_opt = wait.until(EC.presence_of_element_located((By.XPATH, "//div[contains(text(), '最新')]")))
+            time.sleep(1.0)
+            latest_opt = wait.until(EC.presence_of_element_located((By.XPATH, "//div[contains(text(), '最新') or contains(text(), 'Newest')]")))
             driver.execute_script("arguments[0].click();", latest_opt)
-            time.sleep(3)
-        except:
-            print("  無法切換至最新排序，使用預設排序。")
+            time.sleep(3.0)
+        except: pass
 
-        # C. 智慧滾動 (Smart Scroll)
+        # --- C. 智慧滾動 ---
         try:
             scrollable_div = driver.find_element(By.XPATH, "//div[contains(@class, 'm6QErb') and contains(@class, 'DxyBCb')]")
         except:
-            print("  找不到滾動區塊，可能評論數極少。")
+            # 找不到滾動條 -> 截圖
+            logger.warning(f" {real_store_name} 找不到滾動區域")
+            if bucket_name: upload_screenshot_to_gcs(driver, bucket_name, p_id, "no_scroll")
             return [], tag_records, None
 
         last_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
         retry_count = 0
         
-        print(f"    開始滾動抓取評論...")
-
         while True:
             driver.execute_script('arguments[0].scrollTop = arguments[0].scrollHeight', scrollable_div)
-            time.sleep(random.uniform(2.5, 3.5))
+            time.sleep(random.uniform(1.5, 2.5))
             
             soup = BeautifulSoup(driver.page_source, "html.parser")
             blocks = soup.select('div.jftiEf')
-            if not blocks: continue
+            if not blocks: break
             
-            # 記錄最新的一則 ID (用於更新 checkpoint)
-            if not new_top_id: 
-                new_top_id = blocks[0].get('data-review-id')
+            if not new_top_id: new_top_id = blocks[0].get('data-review-id')
 
-            # 檢查停止條件 1: 時間超過 3 年
             last_date_text = blocks[-1].select_one('span.rsqaWe').text if blocks[-1].select_one('span.rsqaWe') else ""
             last_date_obj = parse_google_date(last_date_text)
-            if last_date_obj and last_date_obj < target_cutoff:
-                break
             
-            # 檢查停止條件 2: 遇到上次抓過的 ID (增量更新關鍵)
-            if last_seen_id and any(b.get('data-review-id') == last_seen_id for b in blocks):
-                print(f"     銜接至上次同步點 (增量更新)。")
-                break
+            if last_date_obj and last_date_obj < target_cutoff: break
+            if last_seen_id and any(b.get('data-review-id') == last_seen_id for b in blocks): break
 
-            # 檢查停止條件 3: 滾不動了
             new_height = driver.execute_script("return arguments[0].scrollHeight", scrollable_div)
             if new_height == last_height:
                 retry_count += 1
-                if retry_count >= 3: break # 嘗試 3 次都沒變就停
-            else: 
+                if retry_count >= 3: break
+            else:
                 retry_count = 0
                 last_height = new_height
 
-        # D. 展開全文 & 解析內容
-        expand_buttons = driver.find_elements(By.XPATH, "//button[contains(@aria-label, '顯示更多') or text()='更多']")
-        for btn in expand_buttons:
-            try: driver.execute_script("arguments[0].click();", btn)
-            except: continue
-
+        # --- D. 解析 ---
         final_soup = BeautifulSoup(driver.page_source, "html.parser")
-        for block in final_soup.select('div.jftiEf'):
+        blocks = final_soup.select('div.jftiEf')
+        
+        # 如果最後連一個 block 都沒抓到，也截圖看看發生什麼事
+        if not blocks:
+            logger.warning(f" {real_store_name} 滾動後未發現任何評論區塊")
+            if bucket_name: upload_screenshot_to_gcs(driver, bucket_name, p_id, "empty_reviews")
+
+        for block in blocks:
             rid = block.get('data-review-id')
-            if last_seen_id and rid == last_seen_id: break # 再次確認不重複抓
+            if last_seen_id and rid == last_seen_id: break
             
             content_text = block.select_one('span.wiI7pd').text.strip() if block.select_one('span.wiI7pd') else ""
-            if not content_text: continue # 略過無文字的純評分
+            if not content_text: continue
             
             rel_date_text = block.select_one('span.rsqaWe').text if block.select_one('span.rsqaWe') else ""
             date_obj = parse_google_date(rel_date_text)
+            reviewer_name = block.select_one('div.d4r55').text.strip() if block.select_one('div.d4r55') else "Unknown"
             
             if date_obj and date_obj >= target_cutoff:
                 identity, amount = split_reviewer_info(block.select_one('div.RfnDt').text if block.select_one('div.RfnDt') else "")
+                
                 review_results.append({
-                    "place_name": p_name, "place_id": p_id, "review_id": rid,
-                    "reviewer_name": block.select_one('div.d4r55').text if block.select_one('div.d4r55') else "Unknown",
+                    "place_name": real_store_name,
+                    "place_id": p_id,
+                    "review_id": rid,
+                    "reviewer_name": reviewer_name,
                     "content": content_text,
-                    "relative_date": rel_date_text, "full_date": date_obj.strftime('%Y-%m-%d'),
+                    "relative_date": rel_date_text,
+                    "full_date": date_obj.strftime('%Y-%m-%d'),
                     "is_edited": True if "編輯" in rel_date_text else False,
-                    "reviewer_level": identity, 
+                    "reviewer_level": identity,
                     "reviewer_amount": amount,
                     "processed_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    "batch_id": batch_id, "data_source": "Google_Maps"
+                    "batch_id": batch_id,
+                    "data_source": "Google_Maps"
                 })
 
         return review_results, tag_records, new_top_id 
     except Exception as e:
-        print(f"     抓取異常: {e}")
+        logger.error(f" 抓取異常: {e}")
         return [], [], None
 
-# --- 4. 模組化入口 (被 main.py 呼叫) ---
+# --- 4. 模組入口 ---
 def run(region="A-2", total_shards=1, shard_index=0):
-    """
-    執行 Google 評論爬取任務 (支援分片)
-    """
-    BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
-    ENV_LIMIT = os.getenv("SCAN_LIMIT")
-    SCAN_LIMIT = int(ENV_LIMIT) if (ENV_LIMIT and ENV_LIMIT.isdigit()) else None
+    BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME")
+    if not BUCKET_NAME:
+        logger.error(" 未設定 GCS_BUCKET_NAME")
+        return
+
+    SCAN_LIMIT_ENV = os.environ.get("SCAN_LIMIT")
+    SCAN_LIMIT = int(SCAN_LIMIT_ENV) if SCAN_LIMIT_ENV and SCAN_LIMIT_ENV.isdigit() else None
+
+    logger.info(f" [Reviews Scraper] 啟動 | Shard: {shard_index+1}/{total_shards}")
+    
+    # GCS 路徑 (小寫)
+    INPUT_PREFIX = "raw/store/parts/"
+    REVIEW_OUTPUT_BLOB = f"raw/comments/reviews_{region}_part_{shard_index}.csv"
+    TAG_OUTPUT_BLOB = f"raw/tag/tags_{region}_part_{shard_index}.csv"
+    CHECKPOINT_BLOB = f"raw/checkpoint/checkpoint_{region}_part_{shard_index}.csv"
     
     MY_BATCH_ID = f"BATCH_{datetime.now().strftime('%m%d_%H%M')}"
-    
-    # 路徑定義
-    INPUT_PATH = "raw/store/base.csv"
-    
-    # [修改點 1] 輸出檔名加入分片後綴
-    REVIEW_PART_OUTPUT = f"raw/comments/parts/reviews_{region}_part_{shard_index}.csv"
-    TAG_PART_OUTPUT = f"raw/tag/parts/tags_review_{region}_part_{shard_index}.csv"
-    
-    # [修改點 2] Checkpoint 也要分開，避免互相覆蓋進度
-    CHECKPOINT_FILE = f"raw/checkpoint/checkpoint_reviews_{region}_part_{shard_index}.csv"
 
-    print(f" [Google Reviews] 模組啟動 | 分片 {shard_index + 1}/{total_shards} | 區域: {region}")
+    full_df = load_all_csvs_from_gcs(BUCKET_NAME, INPUT_PREFIX)
+    if full_df is None or full_df.empty: return
 
-    # 1. 讀取店家名單
-    full_df = load_csv_from_gcs(BUCKET_NAME, INPUT_PATH)
-    if full_df is None or full_df.empty:
-        print(" 找不到店家總表 (base.csv)")
-        sys.exit(1)
+    column_mapping = {
+        'URL': 'google_maps_url', 'url': 'google_maps_url', 'Google Maps URL': 'google_maps_url',
+        'Place ID': 'place_id', 'Place Id': 'place_id', 'Name': 'name'
+    }
+    full_df.rename(columns=column_mapping, inplace=True)
+    if 'name' not in full_df.columns:
+        full_df['name'] = full_df['place_id'].astype(str)
 
-    # [修改點 3] 執行分片切分
-    # 這裡的邏輯是：只取「餘數等於當前 index」的列
     stores_df = full_df[full_df.index % total_shards == shard_index].copy()
-    print(f" 本分片分配到 {len(stores_df)} 筆任務 (總數 {len(full_df)})")
+    if SCAN_LIMIT: stores_df = stores_df.head(SCAN_LIMIT)
+    
+    logger.info(f" 任務數: {len(stores_df)} 筆")
 
-    if SCAN_LIMIT: 
-        stores_df = stores_df.head(SCAN_LIMIT)
-        print(f" 測試模式: 僅執行前 {SCAN_LIMIT} 筆")
+    checkpoint_df = load_checkpoint_from_gcs(BUCKET_NAME, CHECKPOINT_BLOB)
 
-    # 2. 讀取 Checkpoint
-    checkpoint_df = load_csv_from_gcs(BUCKET_NAME, CHECKPOINT_FILE)
-    if checkpoint_df is None:
-        checkpoint_df = pd.DataFrame(columns=['place_id', 'latest_review_id', 'last_sync_at'])
-
-    # 3. 初始化 Selenium
+    #  [關鍵修正]：Headless 模式的 Options 設定
     chrome_options = Options()
-    chrome_options.add_argument("--headless") 
+    chrome_options.add_argument("--headless=new") # 使用新版 headless
     chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage") 
-    chrome_options.add_argument("--window-size=900,1000")
-    chrome_options.add_argument("--lang=zh-TW")
-    # 禁止圖片 (加速)
-    prefs = {"profile.managed_default_content_settings.images": 2}
-    chrome_options.add_experimental_option("prefs", prefs)
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--window-size=1920,1080") # 加大視窗，避免 RWD 隱藏按鈕
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled") # 隱藏自動化特徵
+    # 偽裝 User-Agent (這是繞過 Google 封鎖的關鍵)
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
+    
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     
-    batch_size = 3 
-    temp_reviews = []
-    temp_tags = []
+    temp_reviews, temp_tags = [], []
+    batch_size = 2
 
     try:
-        # 使用 enumerate 重新計數
-        for i, (orig_idx, row) in enumerate(stores_df.iterrows(), 1):
-            
-            # --- 資源管控 ---
-            if (i - 1) % batch_size == 0 and i > 1:
+        for step, (idx, row) in enumerate(stores_df.iterrows(), 1):
+            if (step - 1) % batch_size == 0 and step > 1:
                 driver.quit()
                 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
 
-            print(f"[{i}/{len(stores_df)}] {row['name']}")
+            logger.info(f"[{step}/{len(stores_df)}] {row['name']}")
             
             last_id = None
             if not checkpoint_df.empty and row['place_id'] in checkpoint_df['place_id'].values:
                 last_id = checkpoint_df.loc[checkpoint_df['place_id'] == row['place_id'], 'latest_review_id'].values[0]
 
-            # 執行抓取
-            reviews, tags, new_top_id = scrape_reviews_production(driver, row['name'], row.get('formatted_address', ''), row['place_id'], MY_BATCH_ID, last_id)
+            # 呼叫時傳入 BUCKET_NAME 以便截圖上傳
+            reviews, tags, new_top_id = scrape_reviews_by_url(
+                driver, row['google_maps_url'], row['name'], row['place_id'], MY_BATCH_ID, last_id, bucket_name=BUCKET_NAME
+            )
             
             if reviews: temp_reviews.extend(reviews)
             if tags: temp_tags.extend(tags)
 
-            # 更新 Checkpoint (記憶體)
             if new_top_id:
                 new_cp = pd.DataFrame([{
                     'place_id': row['place_id'], 
-                    'latest_review_id': new_top_id, 
+                    'latest_review_id': new_top_id,
                     'last_sync_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }])
                 checkpoint_df = checkpoint_df[checkpoint_df['place_id'] != row['place_id']]
                 checkpoint_df = pd.concat([checkpoint_df, new_cp], ignore_index=True)
 
-            time.sleep(random.uniform(1, 3))
-
-            # --- 中途存檔 (Checkpointing) ---
-            if i % batch_size == 0:
-                print(f" 中途寫入分片檔...")
-                
-                # A. 存評論 (Append Mode)
+            if step % batch_size == 0:
                 if temp_reviews:
-                    current_reviews_df = load_csv_from_gcs(BUCKET_NAME, REVIEW_PART_OUTPUT)
-                    new_reviews_df = pd.DataFrame(temp_reviews)
-                    
-                    if current_reviews_df is not None:
-                        final_reviews = pd.concat([current_reviews_df, new_reviews_df], ignore_index=True)
-                    else:
-                        final_reviews = new_reviews_df
-                    
-                    final_reviews.drop_duplicates(subset=['place_id', 'review_id'], inplace=True)
-                    upload_df_to_gcs(final_reviews, BUCKET_NAME, REVIEW_PART_OUTPUT)
-                    temp_reviews = [] 
-
-                # B. 存標籤 (Append Mode)
+                    save_csv_to_gcs(pd.DataFrame(temp_reviews), BUCKET_NAME, REVIEW_OUTPUT_BLOB)
+                    temp_reviews = []
                 if temp_tags:
-                    current_tags_df = load_csv_from_gcs(BUCKET_NAME, TAG_PART_OUTPUT)
-                    new_tags_df = pd.DataFrame(temp_tags)
-                    
-                    if current_tags_df is not None:
-                        final_tags = pd.concat([current_tags_df, new_tags_df], ignore_index=True)
-                    else:
-                        final_tags = new_tags_df
-                        
-                    final_tags.drop_duplicates(subset=['place_id', 'Tag'], inplace=True)
-                    upload_df_to_gcs(final_tags, BUCKET_NAME, TAG_PART_OUTPUT)
-                    temp_tags = [] 
-
-                # C. 存 Checkpoint (Overwrite Mode)
-                upload_df_to_gcs(checkpoint_df, BUCKET_NAME, CHECKPOINT_FILE)
+                    save_csv_to_gcs(pd.DataFrame(temp_tags), BUCKET_NAME, TAG_OUTPUT_BLOB)
+                    temp_tags = []
+                save_csv_to_gcs(checkpoint_df, BUCKET_NAME, CHECKPOINT_BLOB)
 
     finally:
         driver.quit()
-        print(" 任務結束，瀏覽器已關閉。")
+        if temp_reviews: save_csv_to_gcs(pd.DataFrame(temp_reviews), BUCKET_NAME, REVIEW_OUTPUT_BLOB)
+        if temp_tags: save_csv_to_gcs(pd.DataFrame(temp_tags), BUCKET_NAME, TAG_OUTPUT_BLOB)
+        save_csv_to_gcs(checkpoint_df, BUCKET_NAME, CHECKPOINT_BLOB)
         
-        # --- 最終存檔 ---
-        if temp_reviews or temp_tags:
-            print(f" 執行最終存檔...")
-            if temp_reviews:
-                current_reviews_df = load_csv_from_gcs(BUCKET_NAME, REVIEW_PART_OUTPUT)
-                new_reviews_df = pd.DataFrame(temp_reviews)
-                final_reviews = pd.concat([current_reviews_df, new_reviews_df], ignore_index=True) if current_reviews_df is not None else new_reviews_df
-                final_reviews.drop_duplicates(subset=['place_id', 'review_id'], inplace=True)
-                upload_df_to_gcs(final_reviews, BUCKET_NAME, REVIEW_PART_OUTPUT)
-            
-            if temp_tags:
-                current_tags_df = load_csv_from_gcs(BUCKET_NAME, TAG_PART_OUTPUT)
-                new_tags_df = pd.DataFrame(temp_tags)
-                final_tags = pd.concat([current_tags_df, new_tags_df], ignore_index=True) if current_tags_df is not None else new_tags_df
-                final_tags.drop_duplicates(subset=['place_id', 'Tag'], inplace=True)
-                upload_df_to_gcs(final_tags, BUCKET_NAME, TAG_PART_OUTPUT)
-
-            upload_df_to_gcs(checkpoint_df, BUCKET_NAME, CHECKPOINT_FILE)
-
-    print(" Google Reviews 分片任務完成！")
+        logger.info(f" 分片 {shard_index} 完成！")
