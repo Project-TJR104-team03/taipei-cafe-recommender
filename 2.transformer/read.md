@@ -1,5 +1,5 @@
 graph TD
-    %% Phase 2: Trigger
+    %% Phase 2: Trigger 
     A[(GCS Bucket: Raw CSV)] -->|Event Trigger| B{Cloud Functions}
     B --> C[讀取新店家資料]
     C --> D{增量檢查: ID 是否已存在?}
@@ -38,7 +38,7 @@ graph TD
         I --> K
     end
 
-    %% 樣式設定
+    %% 樣式設定 (樣式必須寫在最後，且確保 ID 正確)
     style F1 fill:#f96,stroke:#333,stroke-width:2px
     style F2 fill:#f96,stroke:#333,stroke-width:2px
     style G1 fill:#f96,stroke:#333,stroke-width:2px
