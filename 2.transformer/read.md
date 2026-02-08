@@ -1,5 +1,5 @@
 graph TD
-    %% Phase 2: Trigger 
+    %% Phase 2: Data Ingestion
     A[(GCS Bucket: Raw CSV)] -->|Event Trigger| B{Cloud Functions}
     B --> C[讀取新店家資料]
     C --> D{增量檢查: ID 是否已存在?}
@@ -7,7 +7,7 @@ graph TD
     subgraph "Phase 3: AI 精煉與特徵工程 (AI Refinement)"
         D -->|否| E[Regex 初步清洗: 去除符號/雜訊/冗餘標籤]
         
-        %% 分流處理
+        %% 雙軌分流處理
         E --> D1[Google Maps Metadata]
         E --> D2[User Reviews]
         
@@ -19,17 +19,15 @@ graph TD
         D2 --> E2[Quality Filtering: 篩選優質評論]
         E2 --> G1[Gemini API: 評論關鍵字與情緒分析]
         
-        %% 核心匯流：特徵聚合與賦分
-        F2 --> H[Feature Aggregation: 綜合店家屬性與評論特徵]
+        %% 核心匯流：綜合賦分
+        F2 --> H[Feature Aggregation: 綜合屬性與評論特徵]
         G1 --> H
         H --> H1[Tag Weight Calculation: 標籤權重賦分]
     end
 
     subgraph "Phase 4: 多重向量化存儲 (Multi-Vector Storage)"
-        %% 路徑一：店家綜合向量
+        %% 雙向量路徑
         H1 -->|綜合描述文本| J1[Embedding Model: 店家綜合向量]
-        
-        %% 路徑二：個別優質評論向量
         G1 -->|單則評論文本| J2[Embedding Model: 個別評論向量]
         
         J1 --> K[(MongoDB Atlas: Vector Search)]
@@ -38,7 +36,7 @@ graph TD
         I --> K
     end
 
-    %% 樣式設定 (樣式必須寫在最後，且確保 ID 正確)
+    %% 樣式設定 (必須獨立於 subgraph 之外且 ID 需完全對應)
     style F1 fill:#f96,stroke:#333,stroke-width:2px
     style F2 fill:#f96,stroke:#333,stroke-width:2px
     style G1 fill:#f96,stroke:#333,stroke-width:2px
