@@ -20,10 +20,9 @@ try:
         supertaste_store,        # 對應 supertaste_store.py
         official_tag_scraper,    # 對應 official_tag_scraper.py
         review_dynamic_scraper,  # 對應 review_dynamic_scraper.py
-        ifoodie_review_scraper   # 對應 ifoodie_review_scraper.py
+        ifoodie_review_scraper,  # 對應 ifoodie_review_scraper.py
+        merger                   # 對應 merger.py
     )
-    # 預留給未來的合併模組
-    # from src.utils import merger
 except ImportError as e:
     logger.error(f" 模組匯入失敗！請確認：\n1. 檔名開頭數字已移除 (例: 01_scanner -> scanner)\n2. src/scraper/ 內有 __init__.py\n錯誤訊息: {e}")
     # 這裡不強制 exit，方便你先測試 main.py 本身邏輯，但執行特定任務會失敗
@@ -111,8 +110,7 @@ def main():
         # Phase 3: 合併期
         elif args.task == "merge":
             logger.info("呼叫 [Data Merger]...")
-            # merger.run(region=args.region)
-            logger.warning("合併功能尚未實作")
+            merger.run()
 
         logger.info(f" 任務 {args.task} 執行完畢！")
 
