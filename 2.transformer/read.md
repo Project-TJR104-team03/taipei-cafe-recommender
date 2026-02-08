@@ -1,5 +1,5 @@
 graph TD
-    %% 階段二：觸發
+    %% Phase 2: Trigger
     A[(GCS Bucket: Raw CSV)] -->|Event Trigger| B{Cloud Functions}
     B --> C[讀取新店家資料]
     C --> D{增量檢查: ID 是否已存在?}
@@ -26,7 +26,7 @@ graph TD
     end
 
     subgraph "Phase 4: 多重向量化存儲 (Multi-Vector Storage)"
-        %% 路徑一：店家綜合向量 (包含評論精華)
+        %% 路徑一：店家綜合向量
         H1 -->|綜合描述文本| J1[Embedding Model: 店家綜合向量]
         
         %% 路徑二：個別優質評論向量
@@ -38,17 +38,14 @@ graph TD
         I --> K
     end
 
-    %% 標註重點
+    %% 樣式設定
     style F1 fill:#f96,stroke:#333,stroke-width:2px
     style F2 fill:#f96,stroke:#333,stroke-width:2px
     style G1 fill:#f96,stroke:#333,stroke-width:2px
-    stroke-width:2px
     style H1 fill:#fff4dd,stroke:#d4a017,stroke-width:2px
-    stroke-width:2px
-    style J2 fill:#bbf,stroke:#333,stroke-width:2px
+    style J1 fill:#bbf,stroke:#333,stroke-width:2px
     style J2 fill:#bbf,stroke:#333,stroke-width:2px
     style K fill:#555,stroke:#333,color:#fff
-
 
 🛠️ 技術實作細節 (Technical Implementation)
 1. 數據清洗與治理 (Data Pre-processing)
