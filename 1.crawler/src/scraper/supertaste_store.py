@@ -1,12 +1,11 @@
-import sys
 import os
 import time
 import json
 import re
 import random
 import logging
-import pandas as pd
 import io
+import pandas as pd
 import unicodedata
 import googlemaps
 from datetime import datetime
@@ -17,33 +16,34 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
-from google.cloud import storage
 from bs4 import BeautifulSoup 
+from google.cloud import storage
 
-# --- 0. 雲端工具與設定 ---
-PROJECT_NAME = "TJR104_SuperTaste_Cloud"
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(PROJECT_NAME)
+# 設定 Logger
+logger = logging.getLogger("SuperTaste")
+logger.setLevel(logging.INFO)
 
+# --- 1. GCS I/O 工具函式 ---
 def get_gcs_client():
     return storage.Client()
 
-def load_csv_from_gcs(bucket_name, blob_name):
-    """從 GCS 讀取 CSV 轉 DataFrame"""
+def read_csv_from_gcs(bucket_name, blob_name):
+    """ 從 GCS 讀取 CSV 轉為 DataFrame """
     try:
         client = get_gcs_client()
         bucket = client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
-        if not blob.exists():
+        if blob.exists():
+            content = blob.download_as_string()
+            return pd.read_csv(io.BytesIO(content))
+        else:
             return None
-        content = blob.download_as_string()
-        return pd.read_csv(io.BytesIO(content))
     except Exception as e:
-        logger.warning(f" GCS 讀取異常 ({blob_name}): {e}")
+        logger.error(f"無法讀取 GCS 檔案 {blob_name}: {e}")
         return None
 
-def upload_df_to_gcs(df, bucket_name, blob_name):
-    """DataFrame 上傳回 GCS"""
+def save_csv_to_gcs(df, bucket_name, blob_name):
+    """ 將 DataFrame 存回 GCS """
     try:
         client = get_gcs_client()
         bucket = client.bucket(bucket_name)
@@ -51,31 +51,30 @@ def upload_df_to_gcs(df, bucket_name, blob_name):
         csv_buffer = io.StringIO()
         df.to_csv(csv_buffer, index=False, encoding='utf-8-sig')
         blob.upload_from_string(csv_buffer.getvalue(), content_type='text/csv')
-        logger.info(f" 資料已更新至: gs://{bucket_name}/{blob_name}")
+        logger.info(f"已儲存至 gs://{bucket_name}/{blob_name}")
     except Exception as e:
-        logger.error(f" GCS 上傳失敗: {e}")
+        logger.error(f"GCS 存檔失敗 {blob_name}: {e}")
 
-# --- 1. 食尚玩家爬蟲類別 (維持不變) ---
-class SuperTasteCrawler:
+# --- 2. 爬蟲類別 (雲端版) ---
+class SuperTasteCrawlerCloud:
     def __init__(self):
         self.driver = self._setup_driver()
         self.wait = WebDriverWait(self.driver, 20)
 
     def _setup_driver(self):
         options = Options()
-        options.add_argument("--start-maximized")
-        options.add_argument("--disable-notifications")
-        # 雲端設定
-        options.add_argument("--headless") 
+        options.add_argument("--headless=new") # 雲端必備
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--window-size=1920,1080")
+        options.add_argument("--disable-gpu")
+        # 偽裝 User-Agent
         options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        
         service = Service(ChromeDriverManager().install())
         return webdriver.Chrome(service=service, options=options)
     
     def restart_driver(self):
-        logger.info(" 重啟瀏覽器釋放資源...")
         try: self.driver.quit()
         except: pass
         self.driver = self._setup_driver()
@@ -84,13 +83,31 @@ class SuperTasteCrawler:
     @staticmethod
     def clean_seed_name(raw_name):
         if not raw_name: return ""
-        name = re.sub(r'^\d+\.\s*', '', raw_name.strip()) 
+        name = raw_name.strip()
+        
+        # [強化清洗]：移除 "台北咖啡廳必訪02." 這種前綴
+        # 邏輯：找到 "數字."，並把前面的所有東西連同數字一起殺掉
+        # 例如: "Test01. Name" -> "Name", "02. Name" -> "Name"
+        name = re.sub(r'^.*?[0-9]+\.\s*', '', name)
+        
         name = name.replace('\n', '').replace('\r', '')
+        # 移除常見分隔符後的內容
         delimiters = r'[｜\|\-\–\—\:\：\/]'
         name = re.split(delimiters, name)[0].strip()
-        blacklist = ["總整理", "懶人包", "攻略", "精選", "必吃", "推薦", "名單"]
+        
+        # [強化黑名單]：過濾非店名的標題
+        blacklist = [
+            "總整理", "懶人包", "攻略", "精選", "必吃", "推薦", "名單", 
+            "常見問題", "FAQ", "Q&A", "延伸閱讀", "看更多", "怎麼挑", "類型", "必訪", "介紹"
+        ]
         if any(bad in name for bad in blacklist): return ""
+        
+        # 排除 Top X
         if "Top" in name and any(c.isdigit() for c in name): return ""
+        
+        # 排除太長像句子的標題 (通常店名不會超過 20 字)
+        if len(name) > 20 and any(x in name for x in ["，", "！", "？", "。"]): return ""
+        
         return name
 
     def scroll_down_slowly(self):
@@ -119,14 +136,14 @@ class SuperTasteCrawler:
                     title = card.find_element(By.XPATH, ".//h3").text.strip()
                     allowed = ["/article/", "/food/", "/travel/"]
                     if url and title and any(p in url for p in allowed):
-                        if re.search(valid_pattern, title, re.IGNORECASE) and "總整理" not in title:
+                        if re.search(valid_pattern, title, re.IGNORECASE):
                             captured.append({"title": title, "url": url})
                 except: continue
             return captured
         except: return []
 
-    def step_1_harvest_article_links(self, keyword, max_pages=3):
-        logger.info(f" [Step 1] 搜尋: {keyword}")
+    def step_1_harvest_article_links(self, keyword, max_pages=1):
+        logger.info(f"[Step 1] 搜尋: {keyword}")
         self.driver.get("https://supertaste.tvbs.com.tw/")
         try:
             try:
@@ -158,7 +175,7 @@ class SuperTasteCrawler:
             all_res = {}
             page = 1
             while page <= max_pages:
-                logger.info(f"📄 抓取第 {page} 頁...")
+                logger.info(f"抓取第 {page} 頁...")
                 self.scroll_down_slowly()
                 items = self._extract_cards_from_current_view()
                 new_cnt = 0
@@ -177,7 +194,7 @@ class SuperTasteCrawler:
                 except: break
             return [{"url": k, "title": v} for k, v in all_res.items()]
         except Exception as e:
-            logger.error(f"❌ Step 1 Error: {e}")
+            logger.error(f"Step 1 Error: {e}")
             return []
 
     def extract_content_with_bs4(self, html):
@@ -195,7 +212,9 @@ class SuperTasteCrawler:
         for h in headers:
             raw = h.get_text(strip=True)
             clean = self.clean_seed_name(raw)
+            # 如果清洗完太短，或是被黑名單過濾掉變空字串，就跳過
             if len(clean) <= 1: continue
+            
             desc = []
             for sib in h.next_siblings:
                 if sib.name in ['h2', 'h3']: break
@@ -207,7 +226,7 @@ class SuperTasteCrawler:
         return data
 
     def step_2_extract_cafes(self, articles):
-        logger.info(" [Step 2] 提取內容...")
+        logger.info("[Step 2] 提取內容...")
         results = []
         target = articles 
         for idx, art in enumerate(target):
@@ -218,7 +237,7 @@ class SuperTasteCrawler:
                 time.sleep(random.uniform(2, 4))
                 try: art_title = self.driver.find_element(By.TAG_NAME, "h1").text.strip()
                 except: art_title = art['title']
-                logger.info(f"📖 [{idx+1}] {art_title[:15]}...")
+                logger.info(f"[{idx+1}] {art_title[:15]}...")
                 shops = self.extract_content_with_bs4(self.driver.page_source)
                 for s in shops:
                     results.append({
@@ -236,7 +255,7 @@ class SuperTasteCrawler:
     def close(self):
         if self.driver: self.driver.quit()
 
-# --- 2. 核心：資料治理 (Matching, Enrichment & Split) ---
+# --- 3. 資料治理 (API 補完) ---
 
 def normalize_text(text):
     if pd.isna(text): return ""
@@ -245,217 +264,221 @@ def normalize_text(text):
     return normalized.lower().replace(" ", "")
 
 def is_valid_cafe_type(types_list):
-    """類別過濾器"""
     if not types_list: return False
     allow = ['cafe', 'bakery', 'food', 'restaurant', 'meal_takeaway', 'store']
     block = ['department_store', 'shopping_mall', 'bar', 'night_club', 'lodging', 'gym']
-    
     has_allow = any(k in types_list for k in allow)
     has_block = any(k in types_list for k in block)
-    
     if 'cafe' in types_list or 'bakery' in types_list: return True
     if has_block and not has_allow: return False
     return True
 
-def fetch_and_format_new_store(place_name):
-    """
-    呼叫 API 並將回傳資料格式化為 (static_dict, dynamic_dict)
-    """
+def fetch_missing_place_id_detailed(place_name):
     api_key = os.getenv("GOOGLE_MAPS_API_KEY")
-    if not api_key: return None, None
+    if not api_key: 
+        logger.error("未設定 GOOGLE_MAPS_API_KEY")
+        return None
     
     try:
         gmaps = googlemaps.Client(key=api_key)
-        # 為了符合 01.py 的 Schema，我們需要 opening_hours, website 等，所以用 find_place 找 ID 後，最好能拿到足夠資訊
-        # 為了節省請求次數，我們這裡使用 find_place 的 fields，雖然它沒有 price_level，但夠用了
-        # 如果需要更完整，可以用 place_details (但較貴)
         
-        fields_req = ["place_id", "name", "formatted_address", "geometry", "types", "rating", "user_ratings_total", "opening_hours", "business_status"]
-        
+        # 1. Text Search
         find_res = gmaps.find_place(
             input=f"{place_name} 台北", 
             input_type="textquery", 
-            fields=fields_req
+            fields=["place_id", "name", "formatted_address", "types"]
         )
         
         if not find_res['status'] == 'OK' or not find_res['candidates']:
-            return None, None
+            return None
             
-        cand = find_res['candidates'][0]
-        types = cand.get('types', [])
+        candidate_basic = find_res['candidates'][0]
+        p_id = candidate_basic['place_id']
         
-        # 1. 類別過濾
+        types = candidate_basic.get('types', [])
+        addr = candidate_basic.get('formatted_address', '')
+        
         if not is_valid_cafe_type(types):
-            logger.warning(f"      攔截非咖啡廳: {cand['name']} ({types})")
-            return None, None
+            logger.warning(f"     攔截非咖啡廳: {candidate_basic['name']}")
+            return None
+        if '新北市' in addr:
+            logger.warning(f"     攔截新北市: {candidate_basic['name']}")
+            return None
 
-        # 2. 資料清洗 (對齊 01.py 的格式)
-        loc = cand.get('geometry', {}).get('location', {})
-        loc_str = f"POINT({loc.get('lng')} {loc.get('lat')})" if loc else None
+        # 2. Place Details
+        details = gmaps.place(
+            place_id=p_id,
+            fields=[
+                "name", "formatted_address", "geometry", "type", 
+                "rating", "user_ratings_total", "business_status", 
+                "opening_hours", "formatted_phone_number", "website"
+            ],
+            language='zh-TW'
+        ).get('result', {})
         
-        weekday_text = cand.get('opening_hours', {}).get('weekday_text', [])
-        f_opening = " | ".join(weekday_text) if weekday_text else None
-        f_types = ",".join(types)
+        details['place_id'] = p_id
         
-        # 3. 建構 Static Data (base.csv)
-        static_data = {
-            'name': cand['name'],
-            'place_id': cand['place_id'],
-            'formatted_phone_number': None, # find_place 可能拿不到，可留空
-            'formatted_address': cand.get('formatted_address'),
-            'website': None, 
-            'location': loc_str,
-            'opening_hours': f_opening,
-            'price_level': None,
-            'business_status': cand.get('business_status'),
-            'types': f_types,
-            'payment_options': "" 
-        }
+        # [關鍵修正]：過濾永久歇業的店家
+        if details.get('business_status') == 'CLOSED_PERMANENTLY':
+            logger.warning(f"     店家已永久歇業: {details['name']}")
+            return None
         
-        # 4. 建構 Dynamic Data (store_dynamic.csv)
-        dynamic_data = {
-            'place_id': cand['place_id'],
-            'name': cand['name'],
-            'rating': cand.get('rating'),
-            'user_ratings_total': cand.get('user_ratings_total'),
-            'data_source': 'Supertaste_API_Fill', # 標記來源
-            'processed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        }
-        
-        return static_data, dynamic_data
+        if '新北市' in details.get('formatted_address', ''):
+            logger.warning(f"     詳細地址確認為新北市，剔除。")
+            return None
+
+        return details
 
     except Exception as e:
-        logger.error(f" API Error: {e}")
-        return None, None
+        logger.error(f"API Error: {e}")
+        return None
 
-def process_and_merge_data(scraped_data, bucket_name):
-    """
-    整合邏輯：比對 -> API 補完 -> 拆分 -> 上傳
-    """
-    # 1. 讀取現有資料表
-    base_path = "raw/store/base.csv"
-    dyn_path = "raw/store_dynamic/store_dynamic.csv"
+def match_and_upsert_stores(scraped_data, bucket_name, base_blob, dyn_blob):
+    """ 比對並更新 GCS 上的總表 """
     
-    df_base = load_csv_from_gcs(bucket_name, base_path)
-    df_dyn = load_csv_from_gcs(bucket_name, dyn_path)
+    # 1. 從 GCS 讀取 Base Table
+    df_base = read_csv_from_gcs(bucket_name, base_blob)
+    if df_base is None:
+        cols_base = ['name', 'place_id', 'formatted_phone_number', 'formatted_address', 
+                     'website', 'location', 'opening_hours', 'price_level', 
+                     'business_status', 'types', 'payment_options', 'google_maps_url']
+        df_base = pd.DataFrame(columns=cols_base)
     
-    # 初始化 (若 GCS 沒檔案)
-    if df_base is None: df_base = pd.DataFrame(columns=['name', 'place_id'])
-    if df_dyn is None: df_dyn = pd.DataFrame(columns=['place_id', 'rating'])
-    
-    # 建立快取
+    # 2. 從 GCS 讀取 Dynamic Table
+    df_dyn = read_csv_from_gcs(bucket_name, dyn_blob)
+    if df_dyn is None:
+        cols_dyn = ['place_id', 'name', 'rating', 'user_ratings_total', 'data_source', 'processed_at']
+        df_dyn = pd.DataFrame(columns=cols_dyn)
+
     df_base['norm_name'] = df_base['name'].apply(normalize_text)
-    name_to_id = dict(zip(df_base['norm_name'], df_base['place_id']))
-    existing_ids = set(df_base['place_id'].dropna().unique())
+    name_to_id_map = dict(zip(df_base['norm_name'], df_base['place_id']))
+    existing_id_set = set(df_base['place_id'].dropna().unique())
     
-    new_static_rows = []
-    new_dynamic_rows = []
-    final_supertaste_reviews = []
-    
-    logger.info(f" 開始比對 (Base: {len(df_base)} 筆)...")
+    matched_results = []
+    new_stores_count = 0
+
+    logger.info(f"開始比對 (Base: {len(df_base)} 筆)...")
 
     for item in scraped_data:
         target_name = item['place_name']
         norm_target = normalize_text(target_name)
         p_id = None
         
-        # A. 本地比對
-        if norm_target in name_to_id:
-            p_id = name_to_id[norm_target]
+        # A. 本地名字比對
+        if norm_target in name_to_id_map:
+            p_id = name_to_id_map[norm_target]
         
         # B. API 補完
         if not p_id:
-            logger.info(f"    本地無 ({target_name}) -> 呼叫 API...")
-            static_d, dynamic_d = fetch_and_format_new_store(target_name)
+            logger.info(f"   清單無此店 ({target_name}) -> 呼叫 API...")
+            api_res = fetch_missing_place_id_detailed(target_name)
             
-            if static_d:
-                found_id = static_d['place_id']
+            if api_res:
+                found_id = api_res['place_id']
                 
-                # Double Check: ID 是否已存在
-                if found_id in existing_ids:
+                if found_id in existing_id_set:
                     p_id = found_id
-                    logger.info(f"     ↳  ID ({found_id}) 已存在，僅關聯。")
+                    logger.info(f"     ↳ ID ({found_id}) 已存在，僅關聯。")
                 else:
-                    # 真正的 New Store!
                     p_id = found_id
-                    logger.info(f"     ↳  發現新店家！加入佇列: {static_d['name']}")
+                    logger.info(f"     ↳ 發現新店家！新增: {api_res['name']}")
                     
-                    new_static_rows.append(static_d)
-                    new_dynamic_rows.append(dynamic_d)
-                    existing_ids.add(found_id) # 更新 Cache
+                    loc = api_res.get('geometry', {}).get('location', {})
+                    loc_str = f"POINT({loc.get('lng')} {loc.get('lat')})" if loc else None
                     
-                    # 稍微 sleep 避免 API Rate Limit
-                    time.sleep(0.5)
+                    types_str = ",".join(api_res.get('types', []))
+                    weekday_text = api_res.get('opening_hours', {}).get('weekday_text', [])
+                    f_opening = " | ".join(weekday_text) if weekday_text else None
+                    
+                    # 1. Static Data
+                    new_base_row = {
+                        'name': api_res['name'],
+                        'place_id': found_id,
+                        'formatted_address': api_res.get('formatted_address'),
+                        'formatted_phone_number': api_res.get('formatted_phone_number'),
+                        'website': api_res.get('website'),
+                        'location': loc_str,
+                        'types': types_str, 
+                        'opening_hours': f_opening,
+                        'business_status': api_res.get('business_status'),
+                        'payment_options': "",
+                        'google_maps_url': "" 
+                    }
+                    
+                    # 2. Dynamic Data
+                    new_dyn_row = {
+                        'place_id': found_id,
+                        'name': api_res['name'],
+                        'rating': api_res.get('rating'),
+                        'user_ratings_total': api_res.get('user_ratings_total'),
+                        'data_source': 'Google_Maps_API',
+                        'processed_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    }
+                    
+                    df_base = pd.concat([df_base, pd.DataFrame([new_base_row])], ignore_index=True)
+                    df_dyn = pd.concat([df_dyn, pd.DataFrame([new_dyn_row])], ignore_index=True)
+                    
+                    existing_id_set.add(found_id)
+                    new_stores_count += 1
 
         item['place_id'] = p_id
-        final_supertaste_reviews.append(item)
+        matched_results.append(item)
     
-    # 2. 合併與上傳
-    
-    # A. 更新 Base Table
-    if new_static_rows:
-        df_new_static = pd.DataFrame(new_static_rows)
-        # 移除 norm_name 以保持 schema 乾淨
+    if new_stores_count > 0:
         if 'norm_name' in df_base.columns: del df_base['norm_name']
-        
-        df_base = pd.concat([df_base, df_new_static], ignore_index=True)
-        # 去重 (以防萬一)
-        df_base = df_base.drop_duplicates(subset=['place_id'], keep='last')
-        
-        upload_df_to_gcs(df_base, bucket_name, base_path)
-        logger.info(f" Base Table 已更新 (新增 {len(new_static_rows)} 筆)")
+        save_csv_to_gcs(df_base, bucket_name, base_blob)
+        save_csv_to_gcs(df_dyn, bucket_name, dyn_blob)
+        logger.info(f"資料表已更新！新增了 {new_stores_count} 筆。")
     else:
-        logger.info(" Base Table 無需更新")
+        logger.info("資料表無需更新。")
 
-    # B. 更新 Dynamic Table
-    if new_dynamic_rows:
-        df_new_dyn = pd.DataFrame(new_dynamic_rows)
-        df_dyn = pd.concat([df_dyn, df_new_dyn], ignore_index=True)
-        upload_df_to_gcs(df_dyn, bucket_name, dyn_path)
-        logger.info(f" Dynamic Table 已更新 (新增 {len(new_dynamic_rows)} 筆)")
+    return matched_results
 
-    # C. 儲存食尚玩家評論
-    df_review = pd.DataFrame(final_supertaste_reviews)
-    # 整理欄位
-    cols = ['place_id', 'place_name', 'description', 'article_title', 'source_url', 'processed_at', 'raw_title']
-    for c in cols: 
-        if c not in df_review.columns: df_review[c] = ""
-    df_review = df_review[cols]
-    
-    review_path = f"raw/supertaste/reviews_supertaste_{datetime.now().strftime('%Y%m%d')}.csv"
-    upload_df_to_gcs(df_review, bucket_name, review_path)
-    
-    logger.info(f" 食尚玩家評論表已儲存: {review_path}")
-    logger.info(f"   比對成功率: {df_review['place_id'].notnull().sum()} / {len(df_review)}")
+# --- 4. 模組入口 ---
+def run(keyword="台北咖啡廳", max_pages=3):
+    BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME")
+    if not BUCKET_NAME:
+        logger.error("未設定 GCS_BUCKET_NAME")
+        return
 
-# --- 3. 模組化入口 (被 main.py 呼叫) ---
-def run():
-    """
-    執行食尚玩家爬蟲與資料補完任務
-    """
-    BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
-    ENV_LIMIT = os.getenv("SCAN_LIMIT")
-    
-    # 預設爬 3 頁，除非環境變數有指定
-    SCAN_LIMIT_PAGES = int(ENV_LIMIT) if (ENV_LIMIT and ENV_LIMIT.isdigit()) else 3
-    
-    print(f" [SuperTaste] 模組啟動 | 目標頁數: {SCAN_LIMIT_PAGES}")
+    # GCS 檔案路徑 (依據需求設定)
+    BASE_BLOB = "raw/store/base.csv"
+    # [路徑更新] Dynamic Table 存到 store_dynamic 資料夾
+    DYN_BLOB = "raw/store_dynamic/store_dynamic.csv"
+    # [路徑更新] Supertaste Reviews 存到 supertaste 資料夾
+    REVIEW_DIR = "raw/supertaste/"
 
-    crawler = SuperTasteCrawler()
+    crawler = SuperTasteCrawlerCloud()
     try:
-        # 1. 爬蟲
-        articles = crawler.step_1_harvest_article_links("台北咖啡廳", max_pages=SCAN_LIMIT_PAGES)
+        articles = crawler.step_1_harvest_article_links(keyword, max_pages=max_pages)
         if articles:
             raw_data = crawler.step_2_extract_cafes(articles)
             
-            # 2. 資料治理 (比對 -> 補完 -> 拆分 -> 上傳)
-            process_and_merge_data(raw_data, BUCKET_NAME)
+            # 比對並更新總表
+            final_data = match_and_upsert_stores(raw_data, BUCKET_NAME, BASE_BLOB, DYN_BLOB)
             
-        else:
-            logger.warning(" Step 1 未能收集到任何文章連結")
+            # 存取食尚玩家的評論 (文章內容)
+            df_review = pd.DataFrame(final_data)
             
-    except Exception as e:
-        logger.error(f" SuperTaste 執行發生錯誤: {e}", exc_info=True)
+            # 剔除無 ID
+            initial_len = len(df_review)
+            df_review = df_review[df_review['place_id'].notna() & (df_review['place_id'] != "")]
+            dropped_count = initial_len - len(df_review)
+            
+            if dropped_count > 0:
+                logger.info(f"已剔除 {dropped_count} 筆無效資料 (無 Place ID)。")
+
+            cols = ['place_id', 'place_name', 'description', 'article_title', 'source_url', 'processed_at', 'raw_title']
+            for c in cols: 
+                if c not in df_review.columns: df_review[c] = ""
+            df_review = df_review[cols]
+            
+            out_blob = f"{REVIEW_DIR}supertaste_reviews_{datetime.now().strftime('%Y%m%d')}.csv"
+            save_csv_to_gcs(df_review, BUCKET_NAME, out_blob)
+            
+            logger.info(f"任務完成！評論表已存: gs://{BUCKET_NAME}/{out_blob}")
+            logger.info(f"   最終有效筆數: {len(df_review)}")
+
     finally:
         crawler.close()
-        print(" SuperTaste 任務結束")
+        print("作業結束")
