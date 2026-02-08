@@ -1,5 +1,4 @@
 graph TD
-    %% Phase 2: Data Ingestion
     A[(GCS Bucket: Raw CSV)] -->|Event Trigger| B{Cloud Functions}
     B --> C[讀取新店家資料]
     C --> D{增量檢查: ID 是否已存在?}
@@ -7,26 +6,26 @@ graph TD
     subgraph "Phase 3: AI 精煉與特徵工程 (AI Refinement)"
         D -->|否| E[Regex 初步清洗: 去除符號/雜訊/冗餘標籤]
         
-        %% 雙軌分流處理
+        %% 雙軌分流
         E --> D1[Google Maps Metadata]
         E --> D2[User Reviews]
         
-        %% 軌道一：店家屬性精煉
+        %% 軌道一內容：店家屬性
         D1 --> F1[Gemini API: 店名校正與分店拆分]
         F1 --> F2[Gemini API: 設施服務提取與 SEO 標籤化]
         
-        %% 軌道二：評論語義提取
+        %% 軌道二內容：評論語義
         D2 --> E2[Quality Filtering: 篩選優質評論]
         E2 --> G1[Gemini API: 評論關鍵字與情緒分析]
         
-        %% 核心匯流：綜合賦分
-        F2 --> H[Feature Aggregation: 綜合屬性與評論特徵]
+        %% 核心匯流內容：綜合賦分
+        F2 --> H[Feature Aggregation: 綜合店屬性與評論特徵]
         G1 --> H
         H --> H1[Tag Weight Calculation: 標籤權重賦分]
     end
 
     subgraph "Phase 4: 多重向量化存儲 (Multi-Vector Storage)"
-        %% 雙向量路徑
+        %% 雙向量路徑內容
         H1 -->|綜合描述文本| J1[Embedding Model: 店家綜合向量]
         G1 -->|單則評論文本| J2[Embedding Model: 個別評論向量]
         
@@ -36,7 +35,7 @@ graph TD
         I --> K
     end
 
-    %% 樣式設定 (必須獨立於 subgraph 之外且 ID 需完全對應)
+    %% 樣式設定
     style F1 fill:#f96,stroke:#333,stroke-width:2px
     style F2 fill:#f96,stroke:#333,stroke-width:2px
     style G1 fill:#f96,stroke:#333,stroke-width:2px
@@ -63,4 +62,4 @@ graph TD
     •用途：處理細節經驗匹配（例如：「肉桂捲有濃郁辛香料味的店」）。
 
 3. 標籤權重賦分機制 (Tag Weighting)
-系統結合「官方標籤」與「評論情緒分析」結果，為每個 Tag 計算動態權重分數。這使搜尋結果具備 「推薦強度」，而非單純的關鍵字匹配。
+   系統結合「官方標籤」與「評論情緒分析」結果，為每個 Tag 計算動態權重分數。這使搜尋結果具備 「推薦強度」，而非單純的關鍵字匹配。
