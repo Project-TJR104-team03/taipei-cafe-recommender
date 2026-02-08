@@ -1,4 +1,5 @@
 graph TD
+
     A[(GCS Bucket: Raw CSV)] -->|Event Trigger| B{Cloud Functions}
     B --> C[讀取新店家資料]
     C --> D{增量檢查: ID 是否已存在?}
