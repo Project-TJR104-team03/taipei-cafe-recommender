@@ -11,6 +11,12 @@ WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
+
+# 安裝系統依賴 (如果未來有用到 Selenium 才需要裝更多，目前這些夠用)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
 # 複製 requirements.txt 並安裝相依套件
 # --no-cache-dir 可以減少映像檔體積
 COPY requirements.txt .
@@ -18,8 +24,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # 複製主程式碼
 # 假設你的主程式檔名是 main.py (如果不是，請修改這裡)
-COPY store_to_db.py .
+COPY . .
 
 # 設定容器啟動時執行的指令
 # Cloud Run Job 執行完畢後容器會自動關閉，這符合我們 ETL 的需求
-CMD ["python", "store_to_db.py"]
+CMD ["python", "main.py"]

@@ -1,5 +1,7 @@
 # 資料處理核心
-pandas>=2.0.0
+pandas>=2.1.0,<2.2.0
+gcsfs>=2023.12.0
+fsspec>=2023.12.0
 
 # Google Cloud 服務
 google-cloud-storage>=2.10.0
@@ -9,3 +11,9 @@ pymongo[srv]>=4.5.0
 
 # 如果有用到其他數值計算，pandas 通常會依賴 numpy，這裡顯式列出較安全
 numpy>=1.24.0
+
+#AI模型
+google-generativeai==0.4.1
+
+# 環境與工具
+python-dotenv==1.0.1

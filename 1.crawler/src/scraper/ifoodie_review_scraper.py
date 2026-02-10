@@ -168,32 +168,39 @@ def scrape_ifoodie_reviews(driver, p_name, p_id, batch_id):
         print(f"   執行錯誤: {str(e)[:50]}...")
         return []
 
-# --- 4. 執行入口 ---
-if __name__ == "__main__":
-    # 環境變數與設定
+# --- 4. 模組化入口 (被 main.py 呼叫) ---
+def run(region="A-2", total_shards=1, shard_index=0):
+    """
+    執行愛食記爬蟲任務 (支援分片)
+    """
     BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
-    # 預設不分區，直接讀取 base.csv，若有需要可自行加入 REGION 變數
-    INPUT_PATH = f"raw/store/base.csv" 
-    # 關鍵：存到獨立檔案
-    COMMENTS_OUTPUT = f"raw/comments/reviews_ifoodie.csv" 
-    
     ENV_LIMIT = os.getenv("SCAN_LIMIT")
     SCAN_LIMIT = int(ENV_LIMIT) if (ENV_LIMIT and ENV_LIMIT.isdigit()) else None
 
-    print(f"[iFoodie Scraper] 啟動 | 限制: {SCAN_LIMIT}")
+    # 路徑定義
+    INPUT_PATH = "raw/store/base.csv" 
+    # [修改點 1] 輸出檔名加入分片後綴
+    COMMENTS_PART_OUTPUT = f"raw/iFoodie/parts/reviews_ifoodie_{region}_part_{shard_index}.csv"
+
+    print(f" [iFoodie Scraper] 模組啟動 | 分片 {shard_index + 1}/{total_shards} | 區域: {region}")
 
     # 1. 讀取名單
-    stores_df = load_csv_from_gcs(BUCKET_NAME, INPUT_PATH)
-    if stores_df is None or stores_df.empty:
-        print("找不到店家總表 (base.csv)，請先執行 01 爬蟲。")
+    full_df = load_csv_from_gcs(BUCKET_NAME, INPUT_PATH)
+    if full_df is None or full_df.empty:
+        print(" 找不到店家總表 (base.csv)，請先執行 01 爬蟲。")
         sys.exit(1)
+
+    # [修改點 2] 執行分片切分
+    stores_df = full_df[full_df.index % total_shards == shard_index].copy()
+    print(f" 本分片分配到 {len(stores_df)} 筆任務 (總數 {len(full_df)})")
 
     if SCAN_LIMIT: 
         stores_df = stores_df.head(SCAN_LIMIT)
+        print(f" 測試模式: 僅執行前 {SCAN_LIMIT} 筆")
 
     # 2. 初始化 Selenium
     options = Options()
-    options.add_argument("--headless") # 雲端強制無頭
+    options.add_argument("--headless") 
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
@@ -202,15 +209,16 @@ if __name__ == "__main__":
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     MY_BATCH_ID = f"BATCH_IFO_{datetime.now().strftime('%m%d_%H%M')}"
     
-    batch_size = 5 # 愛食記比較輕量，可以每 5 筆重啟一次
+    batch_size = 5
     temp_reviews = []
 
     try:
-        for i, (idx, row) in enumerate(stores_df.iterrows(), 1):
+        # 使用 enumerate 重新計數
+        for i, (orig_idx, row) in enumerate(stores_df.iterrows(), 1):
             
-            # --- 資源管控：定期重啟 ---
+            # --- 資源管控 ---
             if (i - 1) % batch_size == 0 and i > 1:
-                print(f"釋放記憶體，重啟瀏覽器 (第 {i} 筆)...")
+                # print(f"    釋放記憶體，重啟瀏覽器...")
                 driver.quit()
                 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
 
@@ -221,36 +229,42 @@ if __name__ == "__main__":
             
             if reviews:
                 temp_reviews.extend(reviews)
-                print(f"   抓取到 {len(reviews)} 筆評論")
+                print(f"    抓取到 {len(reviews)} 筆評論")
             else:
-                print(f"   無資料或未找到店家")
+                pass
+                # print(f"    無資料或未找到店家")
             
             time.sleep(random.uniform(2, 4))
 
-            # --- 中途存檔 (Checkpointing) ---
+            # --- 中途存檔 ---
             if i % batch_size == 0 and temp_reviews:
-                print(f"執行中途存檔...")
-                current_df = load_csv_from_gcs(BUCKET_NAME, COMMENTS_OUTPUT)
+                print(f" 中途寫入分片檔...")
+                # 讀取現有分片檔 (Append Mode)
+                current_df = load_csv_from_gcs(BUCKET_NAME, COMMENTS_PART_OUTPUT)
                 new_df = pd.DataFrame(temp_reviews)
                 
-                final_df = pd.concat([current_df, new_df], ignore_index=True) if current_df is not None else new_df
-                # 去重邏輯：同一店家 + 同一評論者 + 同一內容 視為重複
+                if current_df is not None:
+                    final_df = pd.concat([current_df, new_df], ignore_index=True)
+                else:
+                    final_df = new_df
+                
+                # 去重
                 final_df = final_df.drop_duplicates(subset=['place_id', 'reviewer_name', 'content'], keep='last')
                 
-                upload_df_to_gcs(final_df, BUCKET_NAME, COMMENTS_OUTPUT)
-                temp_reviews = [] # 清空暫存
+                upload_df_to_gcs(final_df, BUCKET_NAME, COMMENTS_PART_OUTPUT)
+                temp_reviews = [] 
 
     finally:
         if 'driver' in locals():
             driver.quit()
         
-        # 最終存檔
+        # --- 最終存檔 ---
         if temp_reviews:
-            print(f"執行最終存檔...")
-            current_df = load_csv_from_gcs(BUCKET_NAME, COMMENTS_OUTPUT)
+            print(f" 執行最終存檔...")
+            current_df = load_csv_from_gcs(BUCKET_NAME, COMMENTS_PART_OUTPUT)
             new_df = pd.DataFrame(temp_reviews)
             final_df = pd.concat([current_df, new_df], ignore_index=True) if current_df is not None else new_df
             final_df = final_df.drop_duplicates(subset=['place_id', 'reviewer_name', 'content'], keep='last')
-            upload_df_to_gcs(final_df, BUCKET_NAME, COMMENTS_OUTPUT)
+            upload_df_to_gcs(final_df, BUCKET_NAME, COMMENTS_PART_OUTPUT)
 
-    print("05 愛食記爬蟲任務完成！")
+    print(" iFoodie 分片任務完成！")

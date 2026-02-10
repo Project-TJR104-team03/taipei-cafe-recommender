@@ -225,9 +225,9 @@ if __name__ == "__main__":
     
     # GCS 路徑定義
     INPUT_PATH = f"raw/store/base.csv" # 讀取店家總表
-    REVIEW_OUTPUT = f"raw/comments/reviews_total.csv" # 評論大表
-    TAG_OUTPUT = f"raw/tag/tags_review.csv" # 評論標籤表
-    CHECKPOINT_FILE = f"raw/checkpoint/sync_checkpoint_{REGION}.csv"
+    REVIEW_OUTPUT = f"raw/comments/reviews_all.csv" # 評論大表
+    TAG_OUTPUT = f"raw/tag/tags_reviews_all.csv" # 評論標籤表
+    CHECKPOINT_FILE = f"raw/checkpoint/checkpoint_all.csv"
 
     print(f" [Review Scraper] 啟動 | 區域: {REGION} | 限制: {SCAN_LIMIT}")
 

@@ -39,4 +39,4 @@ COPY . .
 
 # 6. 設定入口點 (關鍵修改！)
 # 這樣做之後，你在 Cloud Run 的 "Arguments" 欄位只需要填寫 "--task reviews" 即可
-ENTRYPOINT ["python", "main.py"]
+ENTRYPOINT ["python", "review_crawler.py"]
