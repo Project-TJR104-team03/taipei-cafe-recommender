@@ -4,6 +4,25 @@ import json
 import time
 import os
 
+
+#模型與 API 配置
+API_KEY = os.getenv("GEMINI_API_KEY")
+MODEL_NAME = 'gemini-2.5-flash'  # 採用你指定的最新 2.5 模型
+
+#效能與速率限制 (10 RPM 安全設定)
+BATCH_SIZE = 30  
+SLEEP_TIME = 8   
+
+if not API_KEY:
+    raise ValueError("❌ 找不到 API_KEY，請檢查 .env 檔案")
+
+# 初始化 Gemini
+genai.configure(api_key=API_KEY)
+model = genai.GenerativeModel(
+    model_name=MODEL_NAME,
+    generation_config={"response_mime_type": "application/json"}
+)
+
 def ai_cleaner_batch(batch_data):
     """呼叫 AI 進行批次清洗"""
     prompt = f"""
@@ -37,25 +56,6 @@ def clean_name_by_gemini():
     PROGRESS_FILE = f"{PROJECT_ROOT}/staging/cleaning_progress.json"
     TEMP_CSV = f"{PROJECT_ROOT}/staging/temp_results.csv"
     OUTPUT_FINAL = f"{PROJECT_ROOT}/output/cafes_stage2_final_all.csv"
-
-    # 2. 模型與 API 配置
-    API_KEY = os.getenv("GEMINI_API_KEY")
-    MODEL_NAME = 'gemini-2.5-flash'  # 採用你指定的最新 2.5 模型
-
-    # 3. 效能與速率限制 (10 RPM 安全設定)
-    BATCH_SIZE = 30  
-    SLEEP_TIME = 8   
-    # =====================================================================
-
-    if not API_KEY:
-        raise ValueError("❌ 找不到 API_KEY，請檢查 .env 檔案")
-
-    # 初始化 Gemini
-    genai.configure(api_key=API_KEY)
-    model = genai.GenerativeModel(
-        model_name=MODEL_NAME,
-        generation_config={"response_mime_type": "application/json"}
-    )
     
     # 1. 從 GCS 讀取原始資料
     print(f"📡 正在從 GCS 讀取資料: {BUCKET_NAME}...")
