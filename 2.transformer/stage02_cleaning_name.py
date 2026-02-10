@@ -24,7 +24,7 @@ model = genai.GenerativeModel(
     generation_config={"response_mime_type": "application/json"}
 )
 
-def ai_cleaner_batch(batch_data):
+def ai_cleaner_batch(model, batch_data):
     """呼叫 AI 進行批次清洗"""
     prompt = f"""
     你是一位台灣咖啡廳資料專家。請根據提供資訊，拆分「品牌主體」與「分店名」。
