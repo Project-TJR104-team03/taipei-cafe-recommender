@@ -9,7 +9,7 @@ from google.cloud import storage
 BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
 project_folder = os.getenv("PROJECT_FOLDER", "cafe_cleaning_project")
 
-INPUT_FILE = f"gs://{BUCKET_NAME}/{project_folder}/raw/store/base.csv"
+INPUT_FILE = f"gs://{BUCKET_NAME}/raw/store/base.csv"
 OUT_CSV = f"{project_folder}/processed/cafes_stage1_cleaned.csv"
 OUT_JSON = f"{project_folder}/processed/cafes_raw_tags.json"
 
