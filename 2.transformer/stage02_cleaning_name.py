@@ -1,4 +1,5 @@
 import google.generativeai as genai
+from google.cloud import storage
 import pandas as pd
 import json
 import time
@@ -45,7 +46,7 @@ def clean_name_by_gemini():
 
     # ================= 配置區 (請確保 GCS 名稱與網頁一致) =================
 
-    # 1. 雲端路徑設定
+    # 雲端路徑設定
     BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
     PROJECT_FOLDER = os.getenv("PROJECT_FOLDER", "cafe_cleaning_project")
 
@@ -57,13 +58,17 @@ def clean_name_by_gemini():
     TEMP_CSV = f"{PROJECT_ROOT}/staging/temp_results.csv"
     OUTPUT_FINAL = f"{PROJECT_ROOT}/output/cafes_stage2_final_all.csv"
     
+    client = storage.Client()
+    bucket = client.bucket(BUCKET_NAME)
+
     # 1. 從 GCS 讀取原始資料
     print(f"📡 正在從 GCS 讀取資料: {BUCKET_NAME}...")
     try:
         df_stage1 = pd.read_csv(INPUT_CSV)
-        # 讀取 JSON 需要特殊處理 gcsfs
-        with pd.io.common.get_handle(INPUT_JSON, "r")[0] as f:
-            tags_data = json.load(f)
+        # 讀取 JSON 改用 SDK (把 gs:// 路徑轉為 Blob 名稱)，例如：gs://bucket/project/file.json -> project/file.json
+        json_blob_path = INPUT_JSON.replace(f"gs://{BUCKET_NAME}/", "")
+        json_data = bucket.blob(json_blob_path).download_as_text()
+        tags_data = json.loads(json_data)
     except Exception as e:
         print(f"❌ 讀取失敗，請確認路徑或權限: {e}")
         return
@@ -101,18 +106,32 @@ def clean_name_by_gemini():
     except:
         pass
 
+    # 取得今日已處理的起點數量
+    already_done_today = 0
+    # 這裡我們設定一個上限，避免燒完免費額度
+    DAILY_MAX_REQUESTS = 970
+
     # 5. 分批處理
     for i in range(0, len(tasks), BATCH_SIZE):
+
+        if already_done_today >= DAILY_MAX_REQUESTS:
+            print(f"🛑 已達到今日建議上限 ({DAILY_MAX_REQUESTS} 筆)。")
+            print("💾 進度已安全同步至 GCS，管線將於明日自動接續。")
+            return # 不跑後面的最終合併
+
         batch = tasks[i : i + BATCH_SIZE]
         print(f"📦 正在處理: {i + len(processed_ids)} / {len(df_stage1)}...")
         
-        cleaned = ai_cleaner_batch(batch)
+        cleaned = ai_cleaner_batch(model, batch)
         
         if cleaned:
             all_results.extend(cleaned)
             new_ids = [d['place_id'] for d in cleaned]
             processed_ids.extend(new_ids)
             
+            # 每跑完一個 Batch，計數器增加
+            already_done_today += len(batch)
+
             # --- 關鍵：將結果與進度同步回 GCS ---
             try:
                 # 寫入進度 JSON
@@ -120,9 +139,10 @@ def clean_name_by_gemini():
                     json.dump(processed_ids, f)
                 # 寫入暫存 CSV
                 pd.DataFrame(all_results).to_csv(TEMP_CSV, index=False, encoding="utf-8-sig")
-                print(f"✅ 成功同步至雲端 ({len(cleaned)} 筆)")
+                print(f"✅ 同步成功 (今日已累計: {already_done_today})")
             except Exception as e:
                 print(f"⚠️ 雲端寫入失敗 (請檢查權限): {e}")
+    
         else:
             print(f"❌ 批次失敗，等待 {SLEEP_TIME*2} 秒後重試...")
             time.sleep(SLEEP_TIME)
@@ -135,7 +155,7 @@ def clean_name_by_gemini():
     final_df = pd.merge(df_stage1, result_df[['place_id', 'final_name', 'branch']], on="place_id", how="left")
     
     final_df.to_csv(OUTPUT_FINAL, index=False, encoding="utf-8-sig")
-    print(f"✨ 第二階段清洗任務完成！最終檔案：{OUTPUT_FINAL}")
+    print(f"✨ 全量清洗任務圓滿完成！最終檔案：{OUTPUT_FINAL}")
 
 if __name__ == "__main__":
     clean_name_by_gemini()
