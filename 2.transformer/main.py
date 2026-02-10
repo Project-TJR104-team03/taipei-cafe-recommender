@@ -10,22 +10,12 @@ load_dotenv()
 def main():
     start_time = time.time()
     
-    # 1. 取得環境變數
-    bucket_name = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
-    project_folder = os.getenv("PROJECT_FOLDER", "cafe_cleaning_project") # 預設值
-    api_key = os.getenv("GEMINI_API_KEY")
-    
-    if not api_key:
-        print("❌ 錯誤：找不到 GEMINI_API_KEY")
-        return
-
     print("=== 🚀 TJR104 咖啡廳資料清洗管線開始 ===")
 
     # --- 階段一：Regex 初步清洗 ---
     print("\n--- [Step 1] 執行 Regex 初步清洗 ---")
     try:
-        input_raw = "raw/store/base.csv"
-        clean_name_by_py(bucket_name, project_folder, input_raw)
+        clean_name_by_py()
     except Exception as e:
         print(f"❌ 階段一失敗: {e}")
         return
@@ -34,7 +24,7 @@ def main():
     print("\n--- [Step 2] 執行 Gemini AI 進階校對 ---")
     try:
         # 使用你在 stage2 定義的邏輯與路徑
-        clean_name_by_gemini(bucket_name, project_folder, api_key)
+        clean_name_by_gemini()
     except Exception as e:
         print(f"❌ 階段二失敗: {e}")
         return

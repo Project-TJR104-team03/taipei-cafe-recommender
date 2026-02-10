@@ -3,10 +3,10 @@ import pandas as pd
 import json
 import time
 import os
-from dotenv import load_dotenv
+
 
 # ================= 配置區 (請確保 GCS 名稱與網頁一致) =================
-load_dotenv()
+
 
 # 1. 雲端路徑設定
 BUCKET_NAME = "tjr104-cafe-datalake"      # 儲存桶名稱
