@@ -7,14 +7,10 @@ from google.cloud import storage
 
 # ================= 配置區  =================
 BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
-project_folder = os.getenv("PROJECT_FOLDER", "cafe_cleaning_project")
+INPUT_FILE = os.getenv("STAGE01_INPUT_FLIE")
+OUT_CSV = "cafe_cleaning_project/processed/cafes_stage1_cleaned.csv"
+OUT_JSON = "cafe_cleaning_project/processed/cafes_raw_tags.json"
 
-INPUT_FILE = f"gs://{BUCKET_NAME}/raw/store/base.csv"
-OUT_CSV = f"{project_folder}/processed/cafes_stage1_cleaned.csv"
-OUT_JSON = f"{project_folder}/processed/cafes_raw_tags.json"
-
-# 如果資料夾不存在，自動建立 
-os.makedirs(f"{project_folder}/processed", exist_ok=True)
 # ==========================================
 
 def stage1_ultimate_scrubber(name):

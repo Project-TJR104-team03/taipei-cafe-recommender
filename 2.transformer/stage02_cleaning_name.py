@@ -10,15 +10,14 @@ import os
 
 # 1. 雲端路徑設定
 BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
-project_folder = os.getenv("PROJECT_FOLDER", "cafe_cleaning_project")
-PROJECT_ROOT = f"gs://{BUCKET_NAME}/{project_folder}"
+
 
 # --- 自動生成的路徑 ---
-INPUT_CSV = f"{PROJECT_ROOT}/processed/cafes_stage1_cleaned.csv"
-INPUT_JSON = f"{PROJECT_ROOT}/processed/cafes_raw_tags.json"
-PROGRESS_FILE = f"{PROJECT_ROOT}/staging/cleaning_progress.json"
-TEMP_CSV = f"{PROJECT_ROOT}/staging/temp_results.csv"
-OUTPUT_FINAL = f"{PROJECT_ROOT}/output/cafes_stage2_final_all.csv"
+INPUT_CSV = "cafe_cleaning_project/processed/cafes_stage1_cleaned.csv"
+INPUT_JSON = "cafe_cleaning_project/processed/cafes_raw_tags.json"
+PROGRESS_FILE = "cafe_cleaning_project/staging/cleaning_progress.json"
+TEMP_CSV = "cafe_cleaning_project/staging/temp_results.csv"
+OUTPUT_FINAL = "cafe_cleaning_project/output/cafes_stage2_final_all.csv"
 
 # 2. 模型與 API 配置
 API_KEY = os.getenv("GEMINI_API_KEY")
