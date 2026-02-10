@@ -57,7 +57,7 @@ def ai_cleaner_batch(batch_data):
         print(f"⚠️ 批次處理出錯 (API 可能達到限制): {e}")
         return []
 
-def main_run_all():
+def clean_name_by_gemini():
     # 1. 從 GCS 讀取原始資料
     print(f"📡 正在從 GCS 讀取資料: {BUCKET_NAME}...")
     try:
@@ -136,7 +136,7 @@ def main_run_all():
     final_df = pd.merge(df_stage1, result_df[['place_id', 'final_name', 'branch']], on="place_id", how="left")
     
     final_df.to_csv(OUTPUT_FINAL, index=False, encoding="utf-8-sig")
-    print(f"✨ 全量清洗任務完成！最終檔案：{OUTPUT_FINAL}")
+    print(f"✨ 第二階段清洗任務完成！最終檔案：{OUTPUT_FINAL}")
 
 if __name__ == "__main__":
-    main_run_all()
+    clean_name_by_gemini()
