@@ -9,9 +9,9 @@ import os
 
 
 # 1. 雲端路徑設定
-BUCKET_NAME = "tjr104-cafe-datalake"      # 儲存桶名稱
-PROJECT_FOLDER = "cafe_cleaning_project"  # 專案資料夾名稱
-PROJECT_ROOT = f"gs://{BUCKET_NAME}/{PROJECT_FOLDER}"
+BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
+project_folder = os.getenv("PROJECT_FOLDER", "cafe_cleaning_project")
+PROJECT_ROOT = f"gs://{BUCKET_NAME}/{project_folder}"
 
 # --- 自動生成的路徑 ---
 INPUT_CSV = f"{PROJECT_ROOT}/processed/cafes_stage1_cleaned.csv"
