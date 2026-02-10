@@ -7,9 +7,11 @@ from google.cloud import storage
 
 # ================= 配置區  =================
 BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
-INPUT_FILE = "raw/store/base.csv"  
-OUT_CSV = "processed/cafes_stage1_cleaned.csv"
-OUT_JSON = "processed/cafes_raw_tags.json"
+PROJECT_FOLDER = "cafe_cleaning_project"  # 專案資料夾名稱
+PROJECT_ROOT = f"gs://{BUCKET_NAME}/{PROJECT_FOLDER}"
+INPUT_FILE = f"{PROJECT_ROOT}/raw/store/base.csv"
+OUT_CSV = f"{PROJECT_ROOT}/processed/cafes_stage1_cleaned.csv"
+OUT_JSON = f"{PROJECT_ROOT}/processed/cafes_raw_tags.json"
 
 # 如果資料夾不存在，自動建立 
 os.makedirs("data/processed", exist_ok=True)

@@ -14,8 +14,8 @@ PROJECT_FOLDER = "cafe_cleaning_project"  # 專案資料夾名稱
 PROJECT_ROOT = f"gs://{BUCKET_NAME}/{PROJECT_FOLDER}"
 
 # --- 自動生成的路徑 ---
-INPUT_CSV = f"{PROJECT_ROOT}/raw/cafes_stage1_cleaned.csv"
-INPUT_JSON = f"{PROJECT_ROOT}/raw/cafes_raw_tags.json"
+INPUT_CSV = f"{PROJECT_ROOT}/processed/cafes_stage1_cleaned.csv"
+INPUT_JSON = f"{PROJECT_ROOT}/processed/cafes_raw_tags.json"
 PROGRESS_FILE = f"{PROJECT_ROOT}/staging/cleaning_progress.json"
 TEMP_CSV = f"{PROJECT_ROOT}/staging/temp_results.csv"
 OUTPUT_FINAL = f"{PROJECT_ROOT}/output/cafes_stage2_final_all.csv"
