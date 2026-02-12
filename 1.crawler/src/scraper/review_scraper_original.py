@@ -212,9 +212,10 @@ def scrape_reviews_production(driver, p_name, p_addr, p_id, batch_id, last_seen_
     except Exception as e:
         print(f"     抓取異常: {e}")
         return [], [], None
-
-# --- 4. 主程式執行入口 ---
-if __name__ == "__main__":
+    
+    
+# --- 4. 模組入口 ---
+def run():
     # 環境變數設定
     BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
     REGION = os.getenv("SCAN_REGION", "A-2")
