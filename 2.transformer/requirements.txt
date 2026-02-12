@@ -1,7 +1,7 @@
 # 資料處理核心
-pandas>=2.1.0,<2.2.0
-gcsfs>=2023.12.0
-fsspec>=2023.12.0
+pandas
+gcsfs
+fsspec
 
 # Google Cloud 服務
 google-cloud-storage>=2.10.0
@@ -13,7 +13,7 @@ pymongo[srv]>=4.5.0
 numpy>=1.24.0
 
 #AI模型
-google-generativeai==0.4.1
+google-cloud-aiplatform
 
 # 環境與工具
-python-dotenv==1.0.1
+python-dotenv

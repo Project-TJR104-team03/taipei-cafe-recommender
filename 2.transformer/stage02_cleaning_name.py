@@ -1,10 +1,31 @@
-import google.generativeai as genai
+from google.cloud import storage
 import pandas as pd
 import json
 import time
 import os
+import vertexai
+from vertexai.generative_models import GenerativeModel, GenerationConfig
+from google.cloud import storage
 
-def ai_cleaner_batch(batch_data):
+
+# 模型與 API 配置
+PROJECT_ID = os.getenv("GCP_PROJECT_ID", "project-tjr104-cafe") 
+LOCATION = "us-central1"  # 建議使用 us-central1，模型支援度最高
+MODEL_NAME = os.getenv("AI_MODEL", "gemini-2.5-flash") 
+
+# 效能與速率限制 (10 RPM 安全設定)
+BATCH_SIZE = 30  
+SLEEP_TIME = 8   
+
+# 連接到vertexai
+vertexai.init(project=PROJECT_ID, location=LOCATION)
+
+# --- 3. 初始化模型 (注意 GenerationConfig 的寫法) ---
+model = GenerativeModel(MODEL_NAME)
+generation_config = GenerationConfig(
+    response_mime_type="application/json"
+)
+def ai_cleaner_batch(model, batch_data):
     """呼叫 AI 進行批次清洗"""
     prompt = f"""
     你是一位台灣咖啡廳資料專家。請根據提供資訊，拆分「品牌主體」與「分店名」。
@@ -16,17 +37,16 @@ def ai_cleaner_batch(batch_data):
     輸出格式：JSON List [{{ "place_id": "...", "final_name": "...", "branch": "..." }}]
     """
     try:
-        response = model.generate_content(prompt)
-        return json.loads(response.text)
+        response = model.generate_content(prompt, generation_config=generation_config)
+        # 🟢 加入字串清洗，防止 AI 噴出 ```json 框框
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_text)
     except Exception as e:
         print(f"⚠️ 批次處理出錯 (API 可能達到限制): {e}")
         return []
 
 def clean_name_by_gemini():
-
-    # ================= 配置區 (請確保 GCS 名稱與網頁一致) =================
-
-    # 1. 雲端路徑設定
+    # ================= 配置區 =================
     BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
     PROJECT_FOLDER = os.getenv("PROJECT_FOLDER", "cafe_cleaning_project")
 
@@ -37,46 +57,31 @@ def clean_name_by_gemini():
     PROGRESS_FILE = f"{PROJECT_ROOT}/staging/cleaning_progress.json"
     TEMP_CSV = f"{PROJECT_ROOT}/staging/temp_results.csv"
     OUTPUT_FINAL = f"{PROJECT_ROOT}/output/cafes_stage2_final_all.csv"
-
-    # 2. 模型與 API 配置
-    API_KEY = os.getenv("GEMINI_API_KEY")
-    MODEL_NAME = 'gemini-2.5-flash'  # 採用你指定的最新 2.5 模型
-
-    # 3. 效能與速率限制 (10 RPM 安全設定)
-    BATCH_SIZE = 30  
-    SLEEP_TIME = 8   
-    # =====================================================================
-
-    if not API_KEY:
-        raise ValueError("❌ 找不到 API_KEY，請檢查 .env 檔案")
-
-    # 初始化 Gemini
-    genai.configure(api_key=API_KEY)
-    model = genai.GenerativeModel(
-        model_name=MODEL_NAME,
-        generation_config={"response_mime_type": "application/json"}
-    )
     
+    client = storage.Client()
+    bucket = client.bucket(BUCKET_NAME)
+
     # 1. 從 GCS 讀取原始資料
     print(f"📡 正在從 GCS 讀取資料: {BUCKET_NAME}...")
     try:
         df_stage1 = pd.read_csv(INPUT_CSV)
-        # 讀取 JSON 需要特殊處理 gcsfs
-        with pd.io.common.get_handle(INPUT_JSON, "r")[0] as f:
-            tags_data = json.load(f)
+        json_blob_path = INPUT_JSON.replace(f"gs://{BUCKET_NAME}/", "")
+        json_data = bucket.blob(json_blob_path).download_as_text()
+        tags_data = json.loads(json_data)
     except Exception as e:
-        print(f"❌ 讀取失敗，請確認路徑或權限: {e}")
+        print(f"❌ 讀取失敗: {e}")
         return
 
-    # 2. 讀取雲端已完成進度
+    # 2. 讀取雲端已完成進度 (修正點)
     processed_ids = []
     try:
-        with pd.io.common.get_handle(PROGRESS_FILE, "r")[0] as f:
-            processed_ids = json.load(f)
+        with pd.io.common.get_handle(PROGRESS_FILE, "r") as handles:
+            processed_ids = json.load(handles.handle)
+        print(f"🔄 發現進度檔，已完成 {len(processed_ids)} 筆")
     except:
         print("💡 找不到進度檔，將從頭開始處理。")
     
-    # 3. 過濾出尚未處理的任務
+    # 3. 過濾任務
     tasks = []
     for _, row in df_stage1.iterrows():
         pid = str(row['place_id'])
@@ -94,7 +99,7 @@ def clean_name_by_gemini():
         print("🎉 所有資料皆已處理完畢！")
         return
 
-    # 4. 讀取暫存結果 (若有)
+    # 4. 讀取暫存結果
     all_results = []
     try:
         all_results = pd.read_csv(TEMP_CSV).to_dict('records')
@@ -102,40 +107,56 @@ def clean_name_by_gemini():
         pass
 
     # 5. 分批處理
+    print(f"🚀 開始處理任務，共 {len(tasks)} 筆待處理...")
+
+    initial_processed_count = len(processed_ids) 
+    total_records = len(df_stage1)
+
     for i in range(0, len(tasks), BATCH_SIZE):
         batch = tasks[i : i + BATCH_SIZE]
-        print(f"📦 正在處理: {i + len(processed_ids)} / {len(df_stage1)}...")
+        current_processed_total = initial_processed_count + i
+        remaining_count = total_records - current_processed_total
         
-        cleaned = ai_cleaner_batch(batch)
+        print(f"📦 正在處理批次: {i // BATCH_SIZE + 1} | ✅ 進度: {current_processed_total} / {total_records} | ⏳ 剩餘: {remaining_count} 筆...")        
+        
+        # 呼叫 Vertex AI
+        cleaned = ai_cleaner_batch(model, batch)
         
         if cleaned:
             all_results.extend(cleaned)
             new_ids = [d['place_id'] for d in cleaned]
             processed_ids.extend(new_ids)
-            
-            # --- 關鍵：將結果與進度同步回 GCS ---
-            try:
-                # 寫入進度 JSON
-                with pd.io.common.get_handle(PROGRESS_FILE, "w")[0] as f:
-                    json.dump(processed_ids, f)
-                # 寫入暫存 CSV
-                pd.DataFrame(all_results).to_csv(TEMP_CSV, index=False, encoding="utf-8-sig")
-                print(f"✅ 成功同步至雲端 ({len(cleaned)} 筆)")
-            except Exception as e:
-                print(f"⚠️ 雲端寫入失敗 (請檢查權限): {e}")
-        else:
-            print(f"❌ 批次失敗，等待 {SLEEP_TIME*2} 秒後重試...")
-            time.sleep(SLEEP_TIME)
 
+            # --- 立即同步至 GCS (確保 Cloud Run 中斷時進度不遺失) ---
+            try:
+                # 儲存進度 ID 清單
+                bucket.blob(PROGRESS_FILE.replace(f"gs://{BUCKET_NAME}/", "")).upload_from_string(
+                    json.dumps(processed_ids), content_type='application/json'
+                )
+                
+                # 儲存暫存結果 CSV
+                temp_df = pd.DataFrame(all_results)
+                bucket.blob(TEMP_CSV.replace(f"gs://{BUCKET_NAME}/", "")).upload_from_string(
+                    temp_df.to_csv(index=False, encoding="utf-8-sig"), content_type='text/csv'
+                )
+                print(f"✅ 批次完成並已同步至 GCS")
+            except Exception as e:
+                print(f"⚠️ 雲端同步失敗 (但程式繼續): {e}")
+        else:
+            # 如果失敗，通常是觸發了 RPM (每分鐘限制)
+            print(f"❌ 批次失敗，可能是達到 RPM 限制，冷卻 30 秒後重試...")
+            time.sleep(30) # 遇到錯誤時加長冷卻時間
+            continue 
+
+        # 每個批次間的固定冷卻 (預防觸發 Vertex AI 預設 RPM 限制)
         time.sleep(SLEEP_TIME)
 
-    # 6. 合併產出最終檔案至 Output 區
+    # 6. 生成最終檔案
     print("\n💾 正在生成最終合併檔案...")
     result_df = pd.DataFrame(all_results)
     final_df = pd.merge(df_stage1, result_df[['place_id', 'final_name', 'branch']], on="place_id", how="left")
-    
     final_df.to_csv(OUTPUT_FINAL, index=False, encoding="utf-8-sig")
-    print(f"✨ 第二階段清洗任務完成！最終檔案：{OUTPUT_FINAL}")
+    print(f"✨ 全量任務完成！檔案：{OUTPUT_FINAL}")
 
 if __name__ == "__main__":
     clean_name_by_gemini()

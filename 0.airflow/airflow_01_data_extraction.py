@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.providers.google.cloud.operators.cloud_run import CloudRunExecuteJobOperator
+import pendulum
+local_tz = pendulum.timezone("Asia/Taipei") #改台北時區
 
 # 處理 Airflow 版本相容性
 try:
@@ -39,8 +41,8 @@ with DAG(
     'cafe_crawler_pipeline',
     default_args=default_args,
     description='TJR104 完整爬蟲流程：建置 -> 挖掘 -> 合併',
-    schedule_interval=None, # 手動觸發
-    start_date=datetime(2026, 2, 6),
+    schedule_interval= '0 10 * * 1',  # 每周一早上10點執行
+    start_date=datetime(2026, 2, 1, tzinfo=local_tz),
     catchup=False,
     tags=['cafe', 'production', 'v2'],
 ) as dag:
@@ -136,6 +138,20 @@ with DAG(
         }
     )
 
+
+    #原始爬蟲 (1台機器)
+    task_reviews_original = CloudRunExecuteJobOperator(
+        task_id='p2_reviews_original',
+        project_id=PROJECT_ID,
+        region=REGION,
+        job_name=JOB_NAME,
+        trigger_rule='all_done',
+        overrides={
+            "task_count": 1,
+            "container_overrides": [{"args": ["--task", "reviews_original"]}]
+        }
+    )
+
     phase2_done = EmptyOperator(task_id='phase2_completed')
 
     # ==========================================================================
@@ -160,7 +176,7 @@ with DAG(
     last_scan_task >> task_supertaste >> phase1_done
 
     # 2. Phase 1 結束 -> 開啟平行挖掘
-    phase1_done >> [task_tags, task_reviews, task_ifoodie] >> phase2_done
+    phase1_done >> [task_tags, task_reviews, task_ifoodie] >> task_reviews_original >> phase2_done
 
     # 3. Phase 2 結束 -> 合併資料
     phase2_done >> task_merge
