@@ -21,6 +21,7 @@ try:
         official_tag_scraper,    # 對應 official_tag_scraper.py
         review_dynamic_scraper,  # 對應 review_dynamic_scraper.py
         ifoodie_review_scraper,  # 對應 ifoodie_review_scraper.py
+        review_scraper_original, # 對應 review_scraper_original.py
         merger                   # 對應 merger.py
     )
 except ImportError as e:
@@ -34,7 +35,7 @@ def main():
     
     # [必填] 任務名稱
     parser.add_argument("--task", type=str, required=True, 
-                        choices=["scan", "supertaste", "tags", "reviews", "ifoodie", "merge"],
+                        choices=["scan", "supertaste", "tags", "reviews", "ifoodie", "merge", "reviews_original"],
                         help="指定要執行的任務階段")
     
     # [選填] 平行處理參數 (預設為 1，即單機模式)
@@ -84,12 +85,12 @@ def main():
         # Phase 2: 挖掘期 (支援分片平行處理)
         # ==========================================
         elif args.task == "tags":
-                    logger.info(f"呼叫 [Official Tags] (Shard {current_shard})...")
-                    official_tag_scraper.run(
-                        region=args.region,
-                        total_shards=total_shards,   # 使用計算後的變數
-                        shard_index=current_shard    # 使用計算後的變數
-                    )
+            logger.info(f"呼叫 [Official Tags] (Shard {current_shard})...")
+            official_tag_scraper.run(
+                region=args.region,
+                total_shards=total_shards,   # 使用計算後的變數
+                shard_index=current_shard    # 使用計算後的變數
+            )
 
         elif args.task == "reviews":
             logger.info(f"呼叫 [Google Reviews] (Shard {current_shard})...")
@@ -106,6 +107,10 @@ def main():
                 total_shards=total_shards,   # 使用計算後的變數
                 shard_index=current_shard    # 使用計算後的變數
             )
+        
+        elif args.task == "reviews_original":
+            logger.info("呼叫 [Google Reviews Original]...")
+            review_scraper_original.run()
 
         # Phase 3: 合併期
         elif args.task == "merge":
