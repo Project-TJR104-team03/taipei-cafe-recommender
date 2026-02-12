@@ -73,6 +73,75 @@ def upload_df_to_gcs(df, bucket_name, blob_name):
     blob.upload_from_string(csv_buffer.getvalue(), content_type='text/csv')
     print(f"存檔成功: gs://{bucket_name}/{blob_name} (共 {len(df)} 筆)")
 
+# --- Store Base 更新的函式 ---
+def update_store_base(bucket_name):
+    print("\n任務: STORE BASE UPDATE (合併 Parts 並回填 Base)")
+    
+    parts_folder = "raw/store/parts/"
+    base_file = "raw/store/base.csv"
+    
+    # 1. 讀取所有 Store Parts (分片)
+    part_blobs = list_csv_blobs(bucket_name, parts_folder)
+    if not part_blobs:
+        print(f"   目錄 {parts_folder} 為空，無須更新。")
+        return
+
+    print(f"   發現 {len(part_blobs)} 個 Store 分片，讀取合併中...")
+    df_parts_list = []
+    for blob in part_blobs:
+        df = read_csv_from_gcs(bucket_name, blob.name)
+        if not df.empty:
+            df_parts_list.append(df)
+    
+    if not df_parts_list:
+        print("   分片皆為空，跳過。")
+        return
+
+    # 合併所有分片並去重 (只留最新抓到的資訊)
+    df_updates = pd.concat(df_parts_list, ignore_index=True)
+    
+    # 確保只有需要的欄位，避免雜訊
+    target_cols = ['place_id', 'google_maps_url', 'payment_options']
+    # 過濾掉分片中不存在的欄位 (以防萬一)
+    existing_cols = [c for c in target_cols if c in df_updates.columns]
+    
+    if 'place_id' not in existing_cols:
+        print("   錯誤：分片資料中缺少 place_id，無法進行合併。")
+        return
+
+    df_updates = df_updates[existing_cols].drop_duplicates(subset=['place_id'], keep='last')
+    print(f"   分片合併完成，準備更新資料筆數: {len(df_updates)}")
+
+    # 2. 讀取原始 Base.csv
+    print(f"   讀取主檔: {base_file}")
+    df_base = read_csv_from_gcs(bucket_name, base_file)
+    
+    if df_base.empty:
+        print("   錯誤：找不到 base.csv 或檔案為空，無法進行更新。")
+        return
+
+    # 3. 執行合併 (Update Logic)
+    # 如果 base 裡原本就有這些欄位，先移除掉舊的，以免 merge 後變成 _x, _y
+    cols_to_update = [c for c in ['google_maps_url', 'payment_options'] if c in df_updates.columns]
+    
+    if cols_to_update:
+        print(f"   正在更新欄位: {cols_to_update}")
+        # 從 base 中移除即將被更新的欄位 (如果存在)
+        df_base = df_base.drop(columns=[c for c in cols_to_update if c in df_base.columns])
+        
+        # 使用 Left Join 將新資料併入 (以 place_id 為 key)
+        # how='left' 確保 base.csv 的店家數量不會變少，也不會無故新增不存在 base 的店家
+        df_merged = df_base.merge(df_updates, on='place_id', how='left')
+        
+        # 填補空值 (美觀)
+        for col in cols_to_update:
+            df_merged[col] = df_merged[col].fillna('')
+            
+        # 4. 回存 Base.csv
+        upload_df_to_gcs(df_merged, bucket_name, base_file)
+    else:
+        print("   分片中沒有 google_maps_url 或 payment_options 欄位，無需更新。")
+
 def run(region=None):
     BUCKET_NAME = os.getenv("GCS_BUCKET_NAME")
     if not BUCKET_NAME:
@@ -126,6 +195,8 @@ def run(region=None):
         # 5. 上傳結果
         upload_df_to_gcs(full_df, BUCKET_NAME, config['output_file'])
 
+    update_store_base(BUCKET_NAME)
+    
     print("\n[Merger] 所有合併任務執行完畢！")
 
 if __name__ == "__main__":
