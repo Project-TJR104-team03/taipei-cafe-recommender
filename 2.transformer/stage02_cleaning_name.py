@@ -109,10 +109,15 @@ def clean_name_by_gemini():
     # 5. 分批處理
     print(f"🚀 開始處理任務，共 {len(tasks)} 筆待處理...")
 
+    initial_processed_count = len(processed_ids) 
+    total_records = len(df_stage1)
+
     for i in range(0, len(tasks), BATCH_SIZE):
         batch = tasks[i : i + BATCH_SIZE]
-        current_idx = i + len(processed_ids)
-        print(f"📦 正在處理批次: {i // BATCH_SIZE + 1} | 進度: {current_idx} / {len(df_stage1)}...")
+        current_processed_total = initial_processed_count + i
+        remaining_count = total_records - current_processed_total
+        
+        print(f"📦 正在處理批次: {i // BATCH_SIZE + 1} | ✅ 進度: {current_processed_total} / {total_records} | ⏳ 剩餘: {remaining_count} 筆...")        
         
         # 呼叫 Vertex AI
         cleaned = ai_cleaner_batch(model, batch)
