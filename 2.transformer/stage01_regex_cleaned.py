@@ -5,18 +5,6 @@ import os
 import io
 from google.cloud import storage
 
-# ================= 配置區  =================
-BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
-project_folder = os.getenv("PROJECT_FOLDER", "cafe_cleaning_project")
-
-INPUT_FILE = f"gs://{BUCKET_NAME}/{project_folder}/raw/store/base.csv"
-OUT_CSV = f"{project_folder}/processed/cafes_stage1_cleaned.csv"
-OUT_JSON = f"{project_folder}/processed/cafes_raw_tags.json"
-
-# 如果資料夾不存在，自動建立 
-os.makedirs(f"{project_folder}/processed", exist_ok=True)
-# ==========================================
-
 def stage1_ultimate_scrubber(name):
     """核心清洗邏輯"""
     if pd.isna(name): return "", "", []
@@ -48,6 +36,15 @@ def stage1_ultimate_scrubber(name):
 
 # --- 正式執行程序 ---
 def clean_name_by_py():
+
+    # ================= 配置區  =================
+    BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
+    PROJECT_FOLDER = os.getenv("PROJECT_FOLDER", "cafe_cleaning_project")
+    INPUT_FILE = "raw/store/base.csv"
+    OUT_CSV = f"{PROJECT_FOLDER}/processed/cafes_stage1_cleaned.csv"
+    OUT_JSON = f"{PROJECT_FOLDER}/processed/cafes_raw_tags.json"
+    # ==========================================
+    
     client = storage.Client()
     bucket = client.bucket(BUCKET_NAME)
 
