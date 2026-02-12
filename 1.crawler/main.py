@@ -25,7 +25,7 @@ try:
         merger                   # 對應 merger.py
     )
 except ImportError as e:
-    logger.error(f" 模組匯入失敗！請確認：\n1. 檔名開頭數字已移除 (例: 01_scanner -> scanner)\n2. src/scraper/ 內有 __init__.py\n錯誤訊息: {e}")
+    logger.error(f" 模組匯入失敗！錯誤訊息: {e}")
     # 這裡不強制 exit，方便你先測試 main.py 本身邏輯，但執行特定任務會失敗
 
 
