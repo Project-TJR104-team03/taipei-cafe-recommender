@@ -13,7 +13,7 @@ pymongo[srv]>=4.5.0
 numpy>=1.24.0
 
 #AI模型
-google-generativeai
+google-cloud-aiplatform
 
 # 環境與工具
 python-dotenv

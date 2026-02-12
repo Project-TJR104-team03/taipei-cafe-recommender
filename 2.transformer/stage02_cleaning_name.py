@@ -1,28 +1,30 @@
-import google.generativeai as genai
 from google.cloud import storage
 import pandas as pd
 import json
 import time
 import os
+import vertexai
+from vertexai.generative_models import GenerativeModel, GenerationConfig
+from google.cloud import storage
+
 
 # 模型與 API 配置
-API_KEY = os.getenv("GEMINI_API_KEY")
-MODEL_NAME = 'gemini-2.5-flash'
+PROJECT_ID = os.getenv("GCP_PROJECT_ID", "project-tjr104-cafe") 
+LOCATION = "us-central1"  # 建議使用 us-central1，模型支援度最高
+MODEL_NAME = os.getenv("AI_MODEL", "gemini-2.5-flash") 
 
 # 效能與速率限制 (10 RPM 安全設定)
 BATCH_SIZE = 30  
 SLEEP_TIME = 8   
 
-if not API_KEY:
-    raise ValueError("❌ 找不到 API_KEY，請檢查 .env 檔案")
+# 連接到vertexai
+vertexai.init(project=PROJECT_ID, location=LOCATION)
 
-# 初始化 Gemini
-genai.configure(api_key=API_KEY)
-model = genai.GenerativeModel(
-    model_name=MODEL_NAME,
-    generation_config={"response_mime_type": "application/json"}
+# --- 3. 初始化模型 (注意 GenerationConfig 的寫法) ---
+model = GenerativeModel(MODEL_NAME)
+generation_config = GenerationConfig(
+    response_mime_type="application/json"
 )
-
 def ai_cleaner_batch(model, batch_data):
     """呼叫 AI 進行批次清洗"""
     prompt = f"""
@@ -35,7 +37,7 @@ def ai_cleaner_batch(model, batch_data):
     輸出格式：JSON List [{{ "place_id": "...", "final_name": "...", "branch": "..." }}]
     """
     try:
-        response = model.generate_content(prompt)
+        response = model.generate_content(prompt, generation_config=generation_config)
         # 🟢 加入字串清洗，防止 AI 噴出 ```json 框框
         clean_text = response.text.replace("```json", "").replace("```", "").strip()
         return json.loads(clean_text)
@@ -104,40 +106,49 @@ def clean_name_by_gemini():
     except:
         pass
 
-    already_done_today = 0
-    DAILY_MAX_REQUESTS = 970
-
     # 5. 分批處理
-    for i in range(0, len(tasks), BATCH_SIZE):
-        if already_done_today >= DAILY_MAX_REQUESTS:
-            print(f"🛑 已達到今日建議上限 ({DAILY_MAX_REQUESTS} 筆)。")
-            print("💾 進度已安全同步至 GCS。")
-            return 
+    print(f"🚀 開始處理任務，共 {len(tasks)} 筆待處理...")
 
+    initial_processed_count = len(processed_ids) 
+    total_records = len(df_stage1)
+
+    for i in range(0, len(tasks), BATCH_SIZE):
         batch = tasks[i : i + BATCH_SIZE]
-        print(f"📦 正在處理: {i + len(processed_ids)} / {len(df_stage1)}...")
+        current_processed_total = initial_processed_count + i
+        remaining_count = total_records - current_processed_total
         
-        # 🟢 修正點：傳入 model 與 batch
+        print(f"📦 正在處理批次: {i // BATCH_SIZE + 1} | ✅ 進度: {current_processed_total} / {total_records} | ⏳ 剩餘: {remaining_count} 筆...")        
+        
+        # 呼叫 Vertex AI
         cleaned = ai_cleaner_batch(model, batch)
         
         if cleaned:
             all_results.extend(cleaned)
             new_ids = [d['place_id'] for d in cleaned]
             processed_ids.extend(new_ids)
-            already_done_today += len(batch)
 
-            # 同步回 GCS
+            # --- 立即同步至 GCS (確保 Cloud Run 中斷時進度不遺失) ---
             try:
-                with pd.io.common.get_handle(PROGRESS_FILE, "w") as handles:
-                    json.dump(processed_ids, handles.handle)
-                pd.DataFrame(all_results).to_csv(TEMP_CSV, index=False, encoding="utf-8-sig")
-                print(f"✅ 同步成功 (今日已累計: {already_done_today})")
+                # 儲存進度 ID 清單
+                bucket.blob(PROGRESS_FILE.replace(f"gs://{BUCKET_NAME}/", "")).upload_from_string(
+                    json.dumps(processed_ids), content_type='application/json'
+                )
+                
+                # 儲存暫存結果 CSV
+                temp_df = pd.DataFrame(all_results)
+                bucket.blob(TEMP_CSV.replace(f"gs://{BUCKET_NAME}/", "")).upload_from_string(
+                    temp_df.to_csv(index=False, encoding="utf-8-sig"), content_type='text/csv'
+                )
+                print(f"✅ 批次完成並已同步至 GCS")
             except Exception as e:
-                print(f"⚠️ 雲端同步失敗: {e}")
+                print(f"⚠️ 雲端同步失敗 (但程式繼續): {e}")
         else:
-            print(f"❌ 批次失敗，等待重試...")
-            time.sleep(SLEEP_TIME * 2)
+            # 如果失敗，通常是觸發了 RPM (每分鐘限制)
+            print(f"❌ 批次失敗，可能是達到 RPM 限制，冷卻 30 秒後重試...")
+            time.sleep(30) # 遇到錯誤時加長冷卻時間
+            continue 
 
+        # 每個批次間的固定冷卻 (預防觸發 Vertex AI 預設 RPM 限制)
         time.sleep(SLEEP_TIME)
 
     # 6. 生成最終檔案
