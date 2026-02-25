@@ -258,7 +258,15 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
         negative_reason=negative_reason
     )
    cafe_list = result.get("data", [])
-   
+
+   # 如果 recommend_service 有回傳它實際使用的中心點座標，我們就更新使用者的定位！
+   new_lat = result.get("center_lat")
+   new_lng = result.get("center_lng")
+   if new_lat and new_lng and (new_lat != lat or new_lng != lng):
+        # 將使用者的定位更新為龍山寺 (或其他地點)，這樣下一回合就會從這裡開始搜！
+        user_service.update_user_location(user_id, new_lat, new_lng)
+        print(f"📍 [狀態更新] 已將使用者 {user_id} 的錨點固定至 ({new_lat}, {new_lng})")
+
    if not cafe_list:
         print("💡 查無資料，啟動備援模式")
         cafe_list = [
