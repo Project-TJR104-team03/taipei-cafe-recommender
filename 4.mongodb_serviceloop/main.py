@@ -210,7 +210,9 @@ def show_user_list(reply_token, user_id, list_type):
         rating = db_ratings.get("rating", cafe.get("rating", 0.0))
         total_reviews = db_ratings.get("review_amount", cafe.get("total_ratings", 0))
         
-        map_url = f"https://www.google.com/maps/search/?api=1&query={quote(shop_name)}"
+        contact_info = cafe.get("contact", {})
+        db_map_url = contact_info.get("google_maps_url")
+        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(shop_name)}"
         
         if list_type == "bookmarks":
             action_buttons = [
@@ -293,10 +295,12 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
         dist_m = cafe.get('dist_meters', 0)
         dist_str = f"{dist_m / 1000:.1f} km" if dist_m >= 1000 else f"{int(dist_m)} m"
         
-        rating = cafe.get('rating', cafe.get('attributes', {}).get('rating', 0.0))
-        total_reviews = cafe.get('total_ratings', cafe.get('user_ratings_total', 0))
+        rating = cafe.get('rating', 0.0) 
+        total_reviews = cafe.get('total_ratings', 0)
         
-        map_url = f"https://www.google.com/maps/search/?api=1&query={quote(shop_name)}"
+        contact_info = cafe.get("contact", {})
+        db_map_url = contact_info.get("google_maps_url")
+        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(shop_name)}"
         
         open_text, open_color = get_opening_status(cafe)
         

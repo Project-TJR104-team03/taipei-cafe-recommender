@@ -59,7 +59,7 @@ class RecommendService:
             # 🔥 [組員新增] === 1. 座標校正 (支援單點 & 多點中間值定位) ===
             current_search_lat, current_search_lng = lat, lng
             search_query = user_query # 複製一份，避免改到原始資料
-
+            
             if search_query:
                 found_coords = []
                 
@@ -189,7 +189,8 @@ class RecommendService:
                             "ai_tags": "$cafe_info.ai_tags",
                             "vector_score": { "$meta": "vectorSearchScore" },
                             "matched_review": "$content",
-                            "opening_hours": "$cafe_info.opening_hours"
+                            "opening_hours": "$cafe_info.opening_hours",
+                            "contact": "$cafe_info.contact"
                         }}
                     ]
                     
@@ -306,7 +307,8 @@ class RecommendService:
                     "total_ratings": review_count,
                     "match_reason": r.get("matched_review", "符合條件"),
                     # 🔥 [組員新增] 將 opening_hours 傳遞給前端 UI 判斷綠色營業中
-                    "opening_hours": r.get("opening_hours", {}) 
+                    "opening_hours": r.get("opening_hours", {}),
+                    "contact": r.get("contact", {}) 
                 })
             return {
                 "data": formatted_response,
