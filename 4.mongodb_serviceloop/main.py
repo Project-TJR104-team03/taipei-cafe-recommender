@@ -204,8 +204,12 @@ def show_user_list(reply_token, user_id, list_type):
     for cafe in cafes[:10]: # 最多顯示 10 筆
         shop_name = cafe.get("original_name", "未知店家")
         place_id = cafe.get('place_id', '')
-        rating = cafe.get('rating', 0.0)
-        total_reviews = cafe.get('total_ratings', 0)
+        
+        # 🔥 修改這裡：對齊 MongoDB 的巢狀欄位結構，正確抓出星星與評論數
+        db_ratings = cafe.get("ratings", {})
+        rating = db_ratings.get("rating", cafe.get("rating", 0.0))
+        total_reviews = db_ratings.get("review_amount", cafe.get("total_ratings", 0))
+        
         map_url = f"https://www.google.com/maps/search/?api=1&query={quote(shop_name)}"
         
         if list_type == "bookmarks":
@@ -225,6 +229,7 @@ def show_user_list(reply_token, user_id, list_type):
                 "contents": [
                     {"type": "text", "text": f"🏷️ {list_name}", "size": "xs", "color": "#ff6b6b" if list_type == "bookmarks" else "#718096", "weight": "bold"},
                     {"type": "text", "text": shop_name, "weight": "bold", "size": "xl", "wrap": True},
+                    # ✨ 成功把正確的星星和評論數放進卡片裡！
                     create_star_rating_box(rating, total_reviews)
                 ]
             },
@@ -240,7 +245,7 @@ def show_user_list(reply_token, user_id, list_type):
             }
         })
 
-    # ✨ 修改這裡：在 FlexSendMessage 綁定清單專用的 QuickReply
+    # 這裡綁定了上一動我們做好的「專屬快捷按鈕 (看完了)」
     flex_message = FlexSendMessage(
         alt_text=f"您的{list_name}", 
         contents={"type": "carousel", "contents": bubbles},
