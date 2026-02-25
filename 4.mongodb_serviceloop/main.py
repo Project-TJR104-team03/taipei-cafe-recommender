@@ -202,7 +202,7 @@ def show_user_list(reply_token, user_id, list_type):
 
     bubbles = []
     for cafe in cafes[:10]: # 最多顯示 10 筆
-        shop_name = cafe.get("original_name", "未知店家")
+        shop_name = cafe.get("final_name", "未知店家")
         place_id = cafe.get('place_id', '')
         
         # 🔥 修改這裡：對齊 MongoDB 的巢狀欄位結構，正確抓出星星與評論數
@@ -275,13 +275,13 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
    if not cafe_list:
         print("💡 查無資料，啟動備援模式")
         cafe_list = [
-            {"original_name": "測試用咖啡 (Mock)", "place_id": "mock_001", "rating": 4.8, "dist_meters": 150, "ai_tags": [{"tag": "測試"}]},
-            {"original_name": "路易莎 (備援)", "place_id": "mock_002", "rating": 4.2, "dist_meters": 300, "attributes": {"types": ["chain"]}}
+            {"final_name": "測試用咖啡 (Mock)", "place_id": "mock_001", "rating": 4.8, "dist_meters": 150, "ai_tags": [{"tag": "測試"}]},
+            {"final_name": "路易莎 (備援)", "place_id": "mock_002", "rating": 4.2, "dist_meters": 300, "attributes": {"types": ["chain"]}}
         ]
 
    bubbles = []
    for cafe in cafe_list:
-        shop_name = cafe.get("original_name", "咖啡廳")
+        shop_name = cafe.get("final_name", "咖啡廳")
         place_id = cafe.get('place_id', '')
         
         tags = []
