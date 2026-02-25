@@ -303,7 +303,11 @@ class RecommendService:
                     # 🔥 [組員新增] 將 opening_hours 傳遞給前端 UI 判斷綠色營業中
                     "opening_hours": r.get("opening_hours", {}) 
                 })
-            return {"data": formatted_response}
+            return {
+                "data": formatted_response,
+                "center_lat": current_search_lat,
+                "center_lng": current_search_lng
+            }
 
         except Exception as e:
             # 🛡️ [維持原版] 完整錯誤軌跡
