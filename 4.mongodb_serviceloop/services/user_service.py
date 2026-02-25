@@ -1,7 +1,7 @@
 # app/services/user_service.py
 import logging
 from datetime import datetime
-from app.database import db_client
+from database import db_client
 
 logger = logging.getLogger("Coffee_Recommender")
 
