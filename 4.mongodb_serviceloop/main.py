@@ -18,14 +18,14 @@ from linebot.models import (
 )
 from dotenv import load_dotenv
 
-# 🔥 [組員新增] 處理時間狀態
+# 🔥 處理時間狀態
 from datetime import datetime, timedelta
 
 # 引入自定義模組
-from app.database import db_client
-from app.services.recommend_service import RecommendService
-from app.services.user_service import UserService
-from app.agents.chat_agent import ChatAgent
+from database import db_client
+from services.recommend_service import RecommendService
+from services.user_service import UserService
+from agents.chat_agent import ChatAgent
 
 # --- 強制抓取 .env ---
 current_file_path = Path(__file__).resolve()
@@ -52,11 +52,23 @@ user_service = UserService()
 chat_agent = ChatAgent()
 
 user_sessions = {}
-blacklist_sessions = {} # ✨ 新增：用來暫存準備加入黑名單的店家 ID
+blacklist_sessions = {} 
 
 # --- 輔助函式 ---
 def get_standard_quick_reply():
     return QuickReply(items=[
+        QuickReplyButton(action={"type": "location", "label": "📍 點我找附近的店"}),
+        QuickReplyButton(action=PostbackAction(label="📂 我的收藏清單", data="action=view_keep")),
+        QuickReplyButton(action=PostbackAction(label="🚫 我的黑名單", data="action=view_blacklist")),
+        QuickReplyButton(action=PostbackAction(label="🍰 附近哪裡有甜點", data="action=quick_tag&tag=甜點")), 
+        QuickReplyButton(action=PostbackAction(label="💻 找有插座的店", data="action=quick_tag&tag=插座")),
+        QuickReplyButton(action=PostbackAction(label="🌙 開到深夜", data="action=quick_tag&tag=深夜"))
+    ])
+
+# ✨ 新增：查看清單時「專用」的快捷按鈕 (多了一顆看完了)
+def get_list_view_quick_reply():
+    return QuickReply(items=[
+        QuickReplyButton(action=PostbackAction(label="👀 看完了，繼續找店", data="action=close_list")),
         QuickReplyButton(action={"type": "location", "label": "📍 點我找附近的店"}),
         QuickReplyButton(action=PostbackAction(label="📂 我的收藏清單", data="action=view_keep")),
         QuickReplyButton(action=PostbackAction(label="🚫 我的黑名單", data="action=view_blacklist")),
@@ -80,7 +92,7 @@ def get_button_reaction(tag):
     ]
     return random.choice(openings), random.choice(closings)
 
-# 🔥 [組員新增] --- ⭐ 星星評分組件產生器 ---
+# --- ⭐ 星星評分組件產生器 ---
 def create_star_rating_box(rating, total_reviews):
     GOLD_STAR_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/review_gold_star_28.png"
     GREY_STAR_URL = "https://scdn.line-apps.com/n/channel_devcenter/img/fx/review_gray_star_28.png"
@@ -110,7 +122,7 @@ def create_star_rating_box(rating, total_reviews):
         "type": "box", "layout": "baseline", "spacing": "xs", "contents": contents
     }
 
-# 🔥 [組員新增] --- 營業時間狀態產生器 ---
+# --- 營業時間狀態產生器 ---
 def get_opening_status(cafe_data):
     opening_hours = cafe_data.get("opening_hours")
     
@@ -176,7 +188,7 @@ def get_opening_status(cafe_data):
         
     return "今日未營業", "#999999"
 
-# ✨ 新增：顯示「我的收藏」或「我的黑名單」卡片
+# ✨ 顯示「我的收藏」或「我的黑名單」卡片
 def show_user_list(reply_token, user_id, list_type):
     cafes = user_service.get_user_places(user_id, list_type)
     list_name = "收藏清單 ❤️" if list_type == "bookmarks" else "黑名單 🚫"
@@ -187,10 +199,6 @@ def show_user_list(reply_token, user_id, list_type):
             TextSendMessage(text=f"您的{list_name}目前是空的喔！", quick_reply=get_standard_quick_reply())
         )
         return
-    
-# ////////////////////////////////
-# notion分隔
-# ////////////////////////////////
 
     bubbles = []
     for cafe in cafes[:10]: # 最多顯示 10 筆
@@ -200,7 +208,6 @@ def show_user_list(reply_token, user_id, list_type):
         total_reviews = cafe.get('total_ratings', cafe.get('user_ratings_total', 0))
         map_url = f"https://www.google.com/maps/search/?api=1&query={quote(shop_name)}"
         
-        # 依據清單類型設定不同的按鈕
         if list_type == "bookmarks":
             action_buttons = [
                 {"type": "button", "style": "primary", "color": "#48bb78", "action": {"type": "postback", "label": "導航 😍", "data": f"action=yes&id={place_id}&name={quote(shop_name)}"}},
@@ -233,12 +240,16 @@ def show_user_list(reply_token, user_id, list_type):
             }
         })
 
-    flex_message = FlexSendMessage(alt_text=f"您的{list_name}", contents={"type": "carousel", "contents": bubbles})
+    # ✨ 修改這裡：在 FlexSendMessage 綁定清單專用的 QuickReply
+    flex_message = FlexSendMessage(
+        alt_text=f"您的{list_name}", 
+        contents={"type": "carousel", "contents": bubbles},
+        quick_reply=get_list_view_quick_reply()
+    )
     line_bot_api.reply_message(reply_token, flex_message)
 
 # --- 核心搜尋流程 ---
 async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_query=None, opening=None, closing=None, rejected_place_id=None, negative_reason=None):
-    # 直接呼叫 Service
    result = await recommend_service.recommend(
         lat=lat, lng=lng, user_id=user_id, 
         user_query=user_query, 
@@ -255,7 +266,6 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
             {"original_name": "路易莎 (備援)", "place_id": "mock_002", "rating": 4.2, "dist_meters": 300, "attributes": {"types": ["chain"]}}
         ]
 
-    # 製作 Flex Carousel
    bubbles = []
    for cafe in cafe_list:
         shop_name = cafe.get("original_name", "咖啡廳")
@@ -385,10 +395,6 @@ def handle_text(event):
         )
         return
     
-# ////////////////////////////////
-# notion分隔
-# ////////////////////////////////
-
     # 一般流程
     is_old_user = user_service.check_user_exists(user_id)
 
@@ -467,6 +473,14 @@ def handle_postback(event):
     lat = loc['lat'] if loc else None
     lng = loc['lng'] if loc else None
 
+    # ✨ 新增：處理「看完了」收起清單的動作
+    if action == "close_list":
+        line_bot_api.reply_message(
+            event.reply_token, 
+            TextSendMessage(text="OK！隨時可以再呼叫我找店喔 👇", quick_reply=get_standard_quick_reply())
+        )
+        return
+
     if action == "quick_tag":
         tag = params.get('tag')
         if loc:
@@ -506,7 +520,7 @@ def handle_postback(event):
         list_name = "收藏" if list_type == "bookmarks" else "黑名單"
         line_bot_api.reply_message(
             event.reply_token, 
-            TextSendMessage(text=f"✅ 已將該店從{list_name}移除！", quick_reply=get_standard_quick_reply())
+            TextSendMessage(text=f"✅ 已將該店從{list_name}移除！", quick_reply=get_list_view_quick_reply()) # 移除後依然保持清單按鈕
         )
         return
     
@@ -515,7 +529,6 @@ def handle_postback(event):
         place_id = params.get('id')
         ans = params.get('ans')
 
-        # 🌟 新增：把剛剛暫存的原因抓出來
         session_data = blacklist_sessions.get(user_id, {})
         negative_reason = session_data.get("reason")
             
