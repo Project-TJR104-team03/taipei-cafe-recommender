@@ -11,6 +11,8 @@ from locations import ALL_LOCATIONS
 from agents.intent_agent import IntentAgent
 from google import genai 
 from services.scoring import calculate_comprehensive_score
+from constants import TAG_EMOJI_MAP
+
 
 logger = logging.getLogger("Coffee_Recommender")
 
@@ -188,6 +190,7 @@ class RecommendService:
                             "rating": "$cafe_info.total_ratings",
                             "attributes": "$cafe_info.attributes",
                             "ai_tags": "$cafe_info.ai_tags",
+                            "tags": "$cafe_info.tags",
                             "vector_score": { "$meta": "vectorSearchScore" },
                             "matched_review": "$content",
                             "opening_hours": "$cafe_info.opening_hours",
@@ -290,6 +293,35 @@ class RecommendService:
                 open_results = filter_by_opening_hours(path_b_results)
                 final_data = open_results[:10]
 
+            # === 🔥 [新增] 標籤動態排序與視覺化處理 ===
+            def process_display_tags(raw_tags, query_text, btn_tag):
+                if not isinstance(raw_tags, list): return []
+                
+                # 1. 定義黑名單 (絕對不要顯示在 Flex Message 上)
+                negative_tags = {"溫度冷", "悶熱", "服務親切", "服務不佳", "服務效率不佳", "停車困難"}
+                
+                # 2. 定義高價值白名單 (自帶流量的明星標籤)
+                high_value_tags = {"工作友善", "不限時", "插座", "Wi-Fi", "深夜", "店貓", "店狗", "老宅", "甜點", "手沖精品"}
+                
+                # 3. 過濾黑名單
+                filtered_tags = [t for t in raw_tags if t not in negative_tags]
+                
+                # 4. 計算權重
+                def get_weight(tag):
+                    weight = 0
+                    # 絕對優先 (使用者命中)
+                    if query_text and tag in query_text: weight += 10
+                    if btn_tag and tag == btn_tag: weight += 10
+                    # 次要優先 (高價值特徵)
+                    if tag in high_value_tags: weight += 5
+                    return weight
+                
+                # 5. 排序並取前 3 個
+                sorted_tags = sorted(filtered_tags, key=get_weight, reverse=True)[:3]
+                
+                # 6. 使用引入的 TAG_EMOJI_MAP 轉成 Emoji 格式 (若字典沒有該 tag，則保持原文字)
+                return [TAG_EMOJI_MAP.get(t, t) for t in sorted_tags]
+            
             # === 格式化輸出 ===
             formatted_response = []
             for r in final_data:
@@ -304,7 +336,7 @@ class RecommendService:
                     "original_name": r.get("original_name"),
                     "dist_meters": int(r.get("dist_meters", 0)),
                     "rating": rating_val,
-                    "ai_tags": r.get("ai_tags", [])[:3],
+                    "display_tags": process_display_tags(r.get("tags", []), search_query, cafe_tag),
                     "attributes": r.get("attributes", {}),
                     "total_ratings": review_count,
                     "match_reason": r.get("matched_review", "符合條件"),

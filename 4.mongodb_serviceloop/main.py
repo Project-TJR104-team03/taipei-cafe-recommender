@@ -281,6 +281,7 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
             {"final_name": "測試用咖啡 (Mock)", "place_id": "mock_001", "rating": 4.8, "dist_meters": 150, "ai_tags": [{"tag": "測試"}]},
             {"final_name": "路易莎 (備援)", "place_id": "mock_002", "rating": 4.2, "dist_meters": 300, "attributes": {"types": ["chain"]}}
         ]
+    
 
    bubbles = []
    for cafe in cafe_list:
@@ -288,11 +289,7 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
         original_name = cafe.get("original_name", shop_name)
         place_id = cafe.get('place_id', '')
         
-        tags = []
-        if 'ai_tags' in cafe and isinstance(cafe['ai_tags'], list):
-            tags = [t.get('tag', '') for t in cafe['ai_tags'] if isinstance(t, dict)]
-        if not tags and 'attributes' in cafe and 'types' in cafe['attributes']:
-            tags = cafe['attributes']['types']
+        display_tags = cafe.get('display_tags', [])
         
         dist_m = cafe.get('dist_meters', 0)
         dist_str = f"{dist_m / 1000:.1f} km" if dist_m >= 1000 else f"{int(dist_m)} m"
@@ -318,9 +315,16 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
             {"type": "box", "layout": "baseline", "spacing": "none", "contents": dist_time_contents}
         ]
         
-        if tags:
+        if display_tags:
             info_box_contents.append(
-                {"type": "text", "text": f"🏷️ {' '.join(tags[:3])}", "size": "xs", "color": "#aaaaaa", "wrap": True}
+                {
+                    "type": "text", 
+                    "text": " · ".join(display_tags), # 用間隔號串接 (如: 🔌 插座 · 🌙 深夜)
+                    "size": "xs", 
+                    "color": "#888888", 
+                    "wrap": True, # 開啟換行，維持排版穩定
+                    "margin": "sm"
+                }
             )
         
         safe_name = shop_name.replace('&', '及').replace('=', '-')[:20]
