@@ -182,7 +182,7 @@ class RecommendService:
                         {"$unwind": "$cafe_info"},
                         {"$project": {
                             "place_id": "$cafe_info.place_id",
-                            "original_name": "$cafe_info.original_name",
+                            "final_name": "$cafe_info.final_name",
                             "location": "$cafe_info.location",
                             "rating": "$cafe_info.total_ratings",
                             "attributes": "$cafe_info.attributes",
@@ -212,7 +212,7 @@ class RecommendService:
                         c_loc = (item['location']['coordinates'][1], item['location']['coordinates'][0])
                         dist_meters = geodesic(user_loc, c_loc).meters
                         
-                        logger.info(f"📏 店名: {item.get('original_name')} | 距離: {int(dist_meters)}m")
+                        logger.info(f"📏 店名: {item.get('final_name')} | 距離: {int(dist_meters)}m")
 
                         if dist_meters <= 3000:
                             item['dist_meters'] = int(dist_meters)
@@ -269,7 +269,7 @@ class RecommendService:
                 
                 if target_tag:
                     pipeline.append({"$match": {"$or": [
-                        {"original_name": {"$regex": target_tag, "$options": "i"}},
+                        {"final_name": {"$regex": target_tag, "$options": "i"}},
                         {"attributes.types": {"$regex": target_tag, "$options": "i"}},
                         {"ai_tags.tag": {"$regex": target_tag, "$options": "i"}},
                         {"seo_tags": {"$regex": target_tag, "$options": "i"}}
@@ -298,7 +298,7 @@ class RecommendService:
 
                 formatted_response.append({
                     "place_id": r.get("place_id", str(r.get("_id"))),
-                    "original_name": r.get("original_name", "未知店家"),
+                    "final_name": r.get("final_name", "未知店家"),
                     "dist_meters": int(r.get("dist_meters", 0)),
                     "rating": rating_val,
                     "ai_tags": r.get("ai_tags", [])[:3],
