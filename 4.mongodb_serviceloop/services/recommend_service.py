@@ -183,6 +183,7 @@ class RecommendService:
                         {"$project": {
                             "place_id": "$cafe_info.place_id",
                             "final_name": "$cafe_info.final_name",
+                            "original_name": "$cafe_info.original_name",
                             "location": "$cafe_info.location",
                             "rating": "$cafe_info.total_ratings",
                             "attributes": "$cafe_info.attributes",
@@ -300,6 +301,7 @@ class RecommendService:
                 formatted_response.append({
                     "place_id": r.get("place_id", str(r.get("_id"))),
                     "final_name": r.get("final_name", "未知店家"),
+                    "original_name": r.get("original_name"),
                     "dist_meters": int(r.get("dist_meters", 0)),
                     "rating": rating_val,
                     "ai_tags": r.get("ai_tags", [])[:3],
