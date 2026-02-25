@@ -110,8 +110,8 @@ class ReviewPreFilter:
 
 if __name__ == "__main__":
     CONFIG = {
-        "bucket_name": "tjr104-cafe-datalake",
-        "gcs_raw_path": "raw/comments/reviews_all.csv",
+        "bucket_name": "XXX",
+        "gcs_raw_path": "XXX",
         "local_output_path": "reviews_top50_distilled.csv"
     }
     filter_engine = ReviewPreFilter(**CONFIG)

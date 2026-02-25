@@ -2,7 +2,7 @@
 from datetime import datetime
 import logging
 # 注意這裡的引用路徑
-from app.locations import ALL_LOCATIONS 
+from locations import ALL_LOCATIONS 
 
 logger = logging.getLogger("Coffee_Recommender")
 
