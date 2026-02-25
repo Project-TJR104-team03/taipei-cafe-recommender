@@ -204,8 +204,8 @@ def show_user_list(reply_token, user_id, list_type):
     for cafe in cafes[:10]: # 最多顯示 10 筆
         shop_name = cafe.get("original_name", "未知店家")
         place_id = cafe.get('place_id', '')
-        rating = cafe.get('rating', cafe.get('attributes', {}).get('rating', 0.0))
-        total_reviews = cafe.get('total_ratings', cafe.get('user_ratings_total', 0))
+        rating = cafe.get('rating', 0.0)
+        total_reviews = cafe.get('total_ratings', 0)
         map_url = f"https://www.google.com/maps/search/?api=1&query={quote(shop_name)}"
         
         if list_type == "bookmarks":

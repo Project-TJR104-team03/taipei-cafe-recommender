@@ -1,4 +1,4 @@
-# app/templates/prompts.py
+# /templates/prompts.py
 
 USER_INTENT_SYSTEM_PROMPT_TEMPLATE = """
 ### Role

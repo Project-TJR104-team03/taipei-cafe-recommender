@@ -5,12 +5,12 @@ from datetime import datetime
 from geopy.distance import geodesic
 from typing import Any, Dict, List, Optional
 
-from app.database import db_client
-from app.utils import is_google_period_open
-from app.locations import ALL_LOCATIONS
-from app.agents.intent_agent import IntentAgent
+from database import db_client
+from utils import is_google_period_open
+from locations import ALL_LOCATIONS
+from agents.intent_agent import IntentAgent
 from google import genai 
-from app.services.scoring import calculate_comprehensive_score
+from services.scoring import calculate_comprehensive_score
 
 logger = logging.getLogger("Coffee_Recommender")
 
@@ -291,14 +291,19 @@ class RecommendService:
             # === 格式化輸出 ===
             formatted_response = []
             for r in final_data:
+                # 🎯 挖掘 MongoDB 中的 ratings Object
+                db_ratings = r.get("ratings", {})
+                rating_val = db_ratings.get("rating", 0.0)
+                review_count = db_ratings.get("review_amount", 0)
+
                 formatted_response.append({
                     "place_id": r.get("place_id", str(r.get("_id"))),
                     "original_name": r.get("original_name", "未知店家"),
                     "dist_meters": int(r.get("dist_meters", 0)),
-                    "rating": r.get("rating", 0),
+                    "rating": rating_val,
                     "ai_tags": r.get("ai_tags", [])[:3],
                     "attributes": r.get("attributes", {}),
-                    "total_ratings": r.get("total_ratings", 0),
+                    "total_ratings": review_count,
                     "match_reason": r.get("matched_review", "符合條件"),
                     # 🔥 [組員新增] 將 opening_hours 傳遞給前端 UI 判斷綠色營業中
                     "opening_hours": r.get("opening_hours", {}) 

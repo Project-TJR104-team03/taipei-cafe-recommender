@@ -2,8 +2,8 @@
 import json
 import logging
 from datetime import datetime
-from app.agents.base_agent import BaseAgent
-from app.templates.prompts import USER_INTENT_SYSTEM_PROMPT_TEMPLATE
+from agents.base_agent import BaseAgent
+from templates.prompts import USER_INTENT_SYSTEM_PROMPT_TEMPLATE
 from vertexai.generative_models import GenerationConfig # 🔥 改用 Vertex AI 的 Config
 
 logger = logging.getLogger("Coffee_Recommender")

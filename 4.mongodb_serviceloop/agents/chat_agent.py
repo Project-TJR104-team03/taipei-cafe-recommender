@@ -1,7 +1,7 @@
 # app/agents/chat_agent.py
 import json
 import logging
-from app.agents.base_agent import BaseAgent
+from agents.base_agent import BaseAgent
 from vertexai.generative_models import GenerationConfig # 🔥 換成 Vertex AI 的 Config 套件
 
 logger = logging.getLogger("Coffee_Recommender")
