@@ -19,29 +19,26 @@ def is_google_period_open(periods: list, target_dt: datetime) -> bool:
     for period in periods:
         if not isinstance(period, dict):
             continue
+            
         day = period.get('day')
         open_minutes = period.get('open')
         close_minutes = period.get('close')
-        is_overnight = period.get('is_overnight', False)
 
-        if day is None or open_minutes is None:
+        if day is None or open_minutes is None or close_minutes is None:
             continue
 
+        # 只要找今天的資料
         if day == google_target_day:
-            if close_minutes is not None and not is_overnight:
-                if open_minutes <= target_minutes <= close_minutes:
+            # 排除 open:0, close:0 這種代表「半夜00:00準時打烊」的殘留資料
+            if open_minutes == 0 and close_minutes == 0:
+                if target_minutes == 0: # 除非你剛好在 00:00 搜尋
                     return True
-            elif is_overnight:
-                if target_minutes >= open_minutes:
-                    return True
-            elif close_minutes is None:
-                if target_minutes >= open_minutes:
-                    return True
-
-        yesterday_google = (google_target_day - 1) % 7
-        if day == yesterday_google and is_overnight and close_minutes is not None:
-            if target_minutes <= close_minutes:
+                continue
+                
+            # 🔥 終極核心：只要當下時間落在 open 和 close 之間，就是有營業！
+            if open_minutes <= target_minutes <= close_minutes:
                 return True
+
     return False
 
 def get_coordinates_locally(user_text: str):
