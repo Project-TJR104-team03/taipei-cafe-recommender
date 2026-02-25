@@ -203,6 +203,7 @@ def show_user_list(reply_token, user_id, list_type):
     bubbles = []
     for cafe in cafes[:10]: # 最多顯示 10 筆
         shop_name = cafe.get("final_name", "未知店家")
+        original_name = cafe.get("original_name", shop_name)
         place_id = cafe.get('place_id', '')
         
         # 🔥 修改這裡：對齊 MongoDB 的巢狀欄位結構，正確抓出星星與評論數
@@ -212,7 +213,7 @@ def show_user_list(reply_token, user_id, list_type):
         
         contact_info = cafe.get("contact", {})
         db_map_url = contact_info.get("google_maps_url")
-        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(shop_name)}"
+        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(original_name)}"
         
         if list_type == "bookmarks":
             action_buttons = [
@@ -284,6 +285,7 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
    bubbles = []
    for cafe in cafe_list:
         shop_name = cafe.get("final_name", "咖啡廳")
+        original_name = cafe.get("original_name", shop_name)
         place_id = cafe.get('place_id', '')
         
         tags = []
@@ -300,7 +302,7 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
         
         contact_info = cafe.get("contact", {})
         db_map_url = contact_info.get("google_maps_url")
-        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(shop_name)}"
+        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(original_name)}"
         
         open_text, open_color = get_opening_status(cafe)
         
