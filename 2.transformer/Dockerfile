@@ -26,6 +26,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 假設你的主程式檔名是 main.py (如果不是，請修改這裡)
 COPY . .
 
-# 設定容器啟動時執行的指令
-# Cloud Run Job 執行完畢後容器會自動關閉，這符合我們 ETL 的需求
-CMD ["python", "main.py"]
+# 設定容器啟動的進入點 (ENTRYPOINT)
+# 這樣 Airflow 傳遞的參數 (如 --task stage0_gemini) 才會正確附加在後面
+ENTRYPOINT ["python", "main.py"]

@@ -1,9 +1,14 @@
 import pandas as pd
 import re
 import json
-import tag_config
+import os
+from configs import tag_config
 from collections import Counter
-import gcsfs
+from google.cloud import storage
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- [核心處理引擎：保持邏輯完全對齊] ---
 def normalize_tag(raw_tag_text):
@@ -67,17 +72,26 @@ def process_cafe_engine(place_id, tag_series):
 
 # --- [混合模式主程序] ---
 if __name__ == "__main__":
-    # ☁️ 雲端輸入路徑 (請依實際 Bucket 名稱修改)
-    CLOUD_INPUT_PATH = "gs://tjr104-cafe-datalake/raw/tag/tags_total.csv"
+
+    # 從環境變數讀取配置
+    PROJECT_ID = os.getenv("PROJECT_ID", "project-tjr104-cafe")
+    BUCKET_NAME = os.getenv("BUCKET_NAME", "tjr104-cafe-datalake")
     
-    # 💻 地端輸出路徑
-    LOCAL_OUTPUT_JSON = "cafe_data_final.json"
-    LOCAL_REPORT_FILE = "needs_normalization.py"
+    # 輸入路徑維持 pandas gs:// 格式 (需確保有安裝 gcsfs)
+    RAW_TAGS_PATH = os.getenv("GCS_RAW_TAGS_PATH", "raw/tag/tags_total.csv")
+    CLOUD_INPUT_PATH = f"gs://{BUCKET_NAME}/{RAW_TAGS_PATH}"
+    
+    # 輸出 GCS 路徑
+    GCS_OUTPUT_JSON_PATH = os.getenv("GCS_CAFE_DATA_FINAL_PATH", "transform/stage0/cafe_data_final.json")
+    GCS_REPORT_PATH = os.getenv("GCS_TAG_REPORT_PATH", "transform/stage0/needs_normalization.py")
 
     print(f"📖 正在從 GCS 雲端讀取資料...")
 
     try:
         # 直接讀取雲端 CSV (需要安裝 gcsfs)
+        storage_client = storage.Client(project=PROJECT_ID)
+        bucket = storage_client.bucket(BUCKET_NAME)
+
         df = pd.read_csv(CLOUD_INPUT_PATH)
         all_docs = []
         global_unmapped = Counter()
@@ -88,23 +102,26 @@ if __name__ == "__main__":
             all_docs.append(doc)
             global_unmapped.update(unmapped.keys())
             unmapped_meta.update(unmapped)
+        
+        # 輸出至雲端
+        print(f"📥 正在將處理結果儲存至 GCS：gs://{BUCKET_NAME}/{GCS_OUTPUT_JSON_PATH}")
+        json_data = json.dumps(all_docs, ensure_ascii=False, indent=2)
+        json_blob = bucket.blob(GCS_OUTPUT_JSON_PATH)
+        json_blob.upload_from_string(json_data, content_type='application/json')
 
-        # 寫出到本地檔案進行觀察
-        print(f"📥 正在將處理結果儲存至地端：{LOCAL_OUTPUT_JSON}")
-        with open(LOCAL_OUTPUT_JSON, "w", encoding="utf-8") as f:
-            json.dump(all_docs, f, ensure_ascii=False, indent=2)
-
+        # 寫出審核報告到 GCS
         if global_unmapped:
-            with open(LOCAL_REPORT_FILE, "w", encoding="utf-8") as f:
-                f.write("# --- [審核報告] ---\n")
-                f.write("PRIORITY_TAGS = {\n")
-                for tag, count in global_unmapped.most_common(50):
-                    meta = unmapped_meta[tag]
-                    f.write(f"    '{tag}': ('{tag}', '{meta[1]}', None, None),  # 次數: {count}\n")
-                f.write("}\n")
-            print(f"📂 審核報告已產出：{LOCAL_REPORT_FILE}")
+            report_lines = ["# --- [審核報告] ---\n", "PRIORITY_TAGS = {\n"]
+            for tag, count in global_unmapped.most_common(50):
+                meta = unmapped_meta[tag]
+                report_lines.append(f"    '{tag}': ('{tag}', '{meta[1]}', None, None),  # 次數: {count}\n")
+            report_lines.append("}\n")
+            
+            report_blob = bucket.blob(GCS_REPORT_PATH)
+            report_blob.upload_from_string("".join(report_lines), content_type='text/plain; charset=utf-8')
+            print(f"📂 審核報告已產出至：gs://{BUCKET_NAME}/{GCS_REPORT_PATH}")
 
-        print("\n✅ Hybrid 處理完成！現在你可以打開地端檔案進行檢查了。")
+        print("\n✅ Hybrid 處理完成！資料已全面落地雲端。")
 
     except Exception as e:
         print(f"❌ 執行失敗: {e}")

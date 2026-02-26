@@ -6,13 +6,16 @@ from google.cloud import storage
 from google.cloud import aiplatform_v1
 from google import genai
 from google.genai import types
+from dotenv import load_dotenv
+load_dotenv()
 
 # ==========================================
 # [全局配置] 專案基礎設施
 # ==========================================
-PROJECT_ID = "tjr104-485403" 
-BUCKET_NAME = "tjr104-cafe-datalake1"
+PROJECT_ID = os.getenv("PROJECT_ID")
+BUCKET_NAME = os.getenv("BUCKET_NAME")
 LOCATION = "us-central1"
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -26,21 +29,13 @@ class BatchJobLauncher:
         self.location = location
         self.bucket_name = bucket_name
 
-    def upload_to_gcs(self, local_file, gcs_path):
-        client = storage.Client(project=self.project_id)
-        bucket = client.bucket(self.bucket_name)
-        blob = bucket.blob(gcs_path)
-        blob.upload_from_filename(local_file)
-        return f"gs://{self.bucket_name}/{gcs_path}"
-
-    def submit(self, local_input_file, stage_name, model_id):
+    def submit(self, gcs_source_path, TASK_NAME, model_id):
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        gcs_input_path = f"batch_input/{stage_name}/{timestamp}/input.jsonl"
-        gcs_output_uri_prefix = f"gs://{self.bucket_name}/batch_output/{stage_name}/{timestamp}/"
+        gcs_output_uri_prefix = f"gs://{self.bucket_name}/batch_output/{TASK_NAME}/{timestamp}/"
 
         # 資料上傳
-        gcs_input_uri = self.upload_to_gcs(local_input_file, gcs_input_path)
-
+        gcs_input_uri = f"gs://{self.bucket_name}/{gcs_source_path}"
+        
         # 建立 Job Service Client
         client_options = {"api_endpoint": f"{self.location}-aiplatform.googleapis.com"}
         client = aiplatform_v1.JobServiceClient(client_options=client_options)
@@ -48,7 +43,7 @@ class BatchJobLauncher:
         model_path = f"projects/{self.project_id}/locations/{self.location}/publishers/google/models/{model_id}"
 
         batch_prediction_job = {
-            "display_name": f"cafe-{stage_name}-{timestamp}",
+            "display_name": f"cafe-{TASK_NAME}-{timestamp}",
             "model": model_path,
             "input_config": {
                 "instances_format": "jsonl",
@@ -62,6 +57,8 @@ class BatchJobLauncher:
 
         try:
             logger.info(f"🔥 [Batch 引擎] 正在發射全量審計任務: {model_path}")
+            logger.info(f"🤖 使用模型: {model_id}")
+            logger.info(f"📂 讀取來源: {gcs_input_uri}")
             parent = f"projects/{self.project_id}/locations/{self.location}"
             response = client.create_batch_prediction_job(parent=parent, batch_prediction_job=batch_prediction_job)
             
@@ -74,7 +71,7 @@ class BatchJobLauncher:
             raise e
 
 # ==========================================
-# 引擎 2：本地微批次在線發射器 (適用於 Stage B - 1536d)
+# 引擎 2：微批次在線發射器 (適用於 Stage B - 1536d)
 # ==========================================
 class OnlineMicroBatchLauncher:
     def __init__(self, project_id, location):
@@ -137,25 +134,24 @@ if __name__ == "__main__":
     # ==========================
     # 🎯 策略切換開關
     # ==========================
-    TARGET_TASK = "STAGE_B" # 切換 "STAGE_A" 或 "STAGE_B"
+    TARGET_TASK = "AUDIT" # 切換 "STAGE_A" 或 "STAGE_B"
 
-    if TARGET_TASK == "STAGE_A":
-        SOURCE_FILE = "vertex_job_stage_a_final.jsonl" 
-        STAGE_NAME = "stage_a_full_audit"
+    if TARGET_TASK == "AUDIT":
+        SOURCE_FILE = os.getenv("GCS_STAGE_A_JSONL_PATH", "transform/stageA/vertex_job_stage_a.jsonl")
+        TASK_NAME = "stage_a_full_audit"
         MODEL_ID = "gemini-2.0-flash-001" 
         
         # 啟動 Batch 引擎
         launcher = BatchJobLauncher(PROJECT_ID, LOCATION, BUCKET_NAME)
-        launcher.submit(SOURCE_FILE, STAGE_NAME, MODEL_ID)
+        launcher.submit(SOURCE_FILE, TASK_NAME, MODEL_ID)
         
-    elif TARGET_TASK == "STAGE_B":
-        SOURCE_FILE = "vertex_job_stage_b_embedding.jsonl"
-        OUTPUT_FILE = "final_1536_vectors_for_mongo.jsonl" # Stage B 專屬落地檔
+    elif TARGET_TASK == "EMBEDDING":
+        SOURCE_FILE = os.getenv("GCS_STAGE_C_EMBEDDING_JSONL_PATH", "transform/stageC/vertex_job_stage_c_embedding.jsonl")
+        TASK_NAME = "embedding_generation"
         MODEL_ID = "gemini-embedding-001" 
         
-        # 啟動 Online 微批次引擎
-        launcher = OnlineMicroBatchLauncher(PROJECT_ID, LOCATION)
-        launcher.submit(SOURCE_FILE, OUTPUT_FILE, MODEL_ID)
+        launcher = BatchJobLauncher(PROJECT_ID, LOCATION, BUCKET_NAME)
+        launcher.submit(SOURCE_FILE, TASK_NAME, MODEL_ID)
 
     else:
         logger.error("❌ 未知的任務類型設定")

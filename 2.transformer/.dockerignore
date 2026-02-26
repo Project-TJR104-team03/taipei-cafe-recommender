@@ -1,0 +1,19 @@
+.vscode
+
+# 忽略 Git 檔案
+.git
+.gitignore
+
+# 忽略環境變數 (保護密碼)
+.env
+
+# 忽略 Python 虛擬環境與快取
+venv/
+env/
+__pycache__/
+*.pyc
+
+# 忽略本地端可能殘留的原始/輸出資料檔案 (保持 Stateless 核心原則)
+*.csv
+*.json
+*.jsonl

@@ -45,5 +45,7 @@ jobs:
           gcloud run jobs deploy ${{ env.SERVICE_NAME }} \
             --image asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
             --region ${{ env.REGION }} \
-            --task-timeout 3600s \
-            --max-retries 0
+            --task-timeout 86400s \
+            --max-retries 0 \ 
+            --cpu 2 \
+            --memory 4Gi

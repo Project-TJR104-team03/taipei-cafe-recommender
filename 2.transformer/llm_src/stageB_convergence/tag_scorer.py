@@ -1,13 +1,19 @@
 import json
 import logging
-import tag_config
+import os
+from google.cloud import storage
+from dotenv import load_dotenv
+from configs import tag_config
 from typing import Dict, Any, Optional
+
+load_dotenv()
 
 # 設定系統觀測性 (Observability)
 logging.basicConfig(
     level=logging.INFO, 
     format='%(asctime)s - [TAG-SCORER] - %(levelname)s - %(message)s'
 )
+logger = logging.getLogger(__name__)
 
 class TagScorer:
     """
@@ -82,17 +88,17 @@ class TagScorer:
 
         return scores
 
-def run_scoring_pipeline(merged_file: str, audit_file: str, output_file: str):
+def run_scoring_pipeline(PROJECT_ID: str, BUCKET_NAME: str, gcs_merged_file: str, gcs_audit_file: str, gcs_output_file: str):
     """執行批次評分任務"""
-    logging.info("Starting Scoring Pipeline...")
-    
+    logging.info("Starting Scoring Pipeline on GCS...")
+    client = storage.Client(project=PROJECT_ID)
+    bucket = client.bucket(BUCKET_NAME)
+
     try:
-        with open(merged_file, 'r', encoding='utf-8') as f:
-            merged_dict = json.load(f)
-        with open(audit_file, 'r', encoding='utf-8') as f:
-            audit_dict = json.load(f)
+        merged_dict = json.loads(bucket.blob(gcs_merged_file).download_as_text(encoding='utf-8'))
+        audit_dict = json.loads(bucket.blob(gcs_audit_file).download_as_text(encoding='utf-8'))
     except Exception as e:
-        logging.error(f"IO Error: {e}")
+        logger.error(f"GCS IO Error: {e}")
         return
 
     scorer = TagScorer()
@@ -119,15 +125,15 @@ def run_scoring_pipeline(merged_file: str, audit_file: str, output_file: str):
         except Exception as e:
             logging.error(f"Unexpected error in {place_id}: {e}")
 
-    # 存檔
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump(final_output, f, ensure_ascii=False, indent=2)
-    
-    logging.info(f"Scoring complete. Total shops processed: {len(final_output)}")
+    # 上傳至GCS
+    bucket.blob(gcs_output_file).upload_from_string(json.dumps(final_output, ensure_ascii=False, indent=2), content_type='application/json')
+    logger.info(f"Scoring complete. Total shops processed: {len(final_output)}. Output saved to gs://{BUCKET_NAME}/{gcs_output_file}")
 
 if __name__ == "__main__":
     run_scoring_pipeline(
-        merged_file="normalized_merged_data.json",
-        audit_file="final_readable_audit.json",
-        output_file="final_scored_data.json"
+        PROJECT_ID=os.getenv("PROJECT_ID"),
+        BUCKET_NAME=os.getenv("BUCKET_NAME"),
+        gcs_merged_file=os.getenv("GCS_NORMALIZED_MERGED_PATH", "transform/stageB/normalized_merged_data.json"),
+        gcs_audit_file=os.getenv("GCS_FINAL_AUDIT_JSON_PATH"),
+        gcs_output_file=os.getenv("GCS_FINAL_SCORED_PATH", "transform/stageB/final_scored_data.json")
     )

@@ -38,11 +38,10 @@ def stage1_ultimate_scrubber(name):
 def clean_name_by_py():
 
     # ================= 配置區  =================
-    BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
-    PROJECT_FOLDER = os.getenv("PROJECT_FOLDER", "cafe_cleaning_project")
-    INPUT_FILE = "raw/store/base.csv"
-    OUT_CSV = f"{PROJECT_FOLDER}/processed/cafes_stage1_cleaned.csv"
-    OUT_JSON = f"{PROJECT_FOLDER}/processed/cafes_raw_tags.json"
+    BUCKET_NAME = os.getenv("BUCKET_NAME", "tjr104-cafe-datalake")
+    INPUT_FILE = os.getenv("GCS_RAW_STORE_PATH", "raw/store/base.csv")
+    OUT_CSV = os.getenv("GCS_NAME_REGEX_CLEAND", "transform/stage0/cafes_name_regex_cleaned.csv")
+    OUT_JSON = os.getenv("GCS_TAG_REGEX", "transform/stage0/cafes_tag_regex.csv")
     # ==========================================
     
     client = storage.Client()
