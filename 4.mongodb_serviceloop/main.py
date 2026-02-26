@@ -434,6 +434,9 @@ def handle_text(event):
         extracted_keyword = ai_result.get("keyword", "")
         search_term = extracted_keyword if extracted_keyword else (extracted_tags[0] if extracted_tags else "熱門")
         
+        # 🔥 [修正]：把 AI 翻譯出來的第一個標準 Tag 抓出來，準備傳給後端！
+        primary_tag = extracted_tags[0] if extracted_tags else None
+
         if not is_old_user:
             user_service.log_action(
                 user_id, "INIT_PREF", "SYSTEM_INIT", 
@@ -460,8 +463,12 @@ def handle_text(event):
         opening = ai_result.get("opening", "好的，正在幫您搜尋中...")
         closing = ai_result.get("closing", "希望這些店符合您的需求！")
 
+        # 🔥 [修正]：明確加上 tag=primary_tag 參數，把 AI 的翻譯結果交給 Path B！
         asyncio.create_task(process_recommendation(
-            event.reply_token, lat, lng, user_id, user_query=search_term, opening=opening, closing=closing
+            event.reply_token, lat, lng, user_id, 
+            tag=primary_tag, # 👈 關鍵修改就在這行
+            user_query=search_term, 
+            opening=opening, closing=closing
         ))
         return
 
