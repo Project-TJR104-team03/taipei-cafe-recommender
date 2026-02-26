@@ -42,5 +42,5 @@ jobs:
             --image asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --task-timeout 86400s \
-            --max-retries 0
+            --max-retries 0 \
             --memory 2Gi \
