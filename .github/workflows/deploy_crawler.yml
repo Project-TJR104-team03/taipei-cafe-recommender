@@ -39,13 +39,11 @@ jobs:
 
       - name: Deploy Cloud Run Job
         run: |
-          # 清理同名 Service 避免衝突
           gcloud run services delete ${{ env.SERVICE_NAME }} --region ${{ env.REGION }} --quiet || true
-
           gcloud run jobs deploy ${{ env.SERVICE_NAME }} \
             --image asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --task-timeout 86400s \
-            --max-retries 0 \ 
+            --max-retries 0 \
             --cpu 2 \
             --memory 4Gi
