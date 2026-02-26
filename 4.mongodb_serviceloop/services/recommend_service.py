@@ -274,11 +274,9 @@ class RecommendService:
                 
                 if target_tag:
                     pipeline.append({"$match": {"$or": [
-                        {"final_name": {"$regex": target_tag, "$options": "i"}},
-                        {"attributes.types": {"$regex": target_tag, "$options": "i"}},
-                        {"ai_tags.tag": {"$regex": target_tag, "$options": "i"}},
-                        {"seo_tags": {"$regex": target_tag, "$options": "i"}}
-                    ]}})
+                                        {"original_name": {"$regex": target_tag, "$options": "i"}},
+                                        {"tags": {"$regex": target_tag, "$options": "i"}}  # 只留最新的神級標籤陣列
+                                    ]}})
 
                 # 👑 [維持原版] 放棄組員簡陋的 sort，堅持使用這套神級動態距離衰減算分公式！
                 pipeline.append({"$addFields": {
