@@ -11,6 +11,8 @@ from locations import ALL_LOCATIONS
 from agents.intent_agent import IntentAgent
 from google import genai 
 from services.scoring import calculate_comprehensive_score
+from constants import TAG_EMOJI_MAP
+
 
 logger = logging.getLogger("Coffee_Recommender")
 
@@ -59,7 +61,7 @@ class RecommendService:
             # 🔥 [組員新增] === 1. 座標校正 (支援單點 & 多點中間值定位) ===
             current_search_lat, current_search_lng = lat, lng
             search_query = user_query # 複製一份，避免改到原始資料
-
+            
             if search_query:
                 found_coords = []
                 
@@ -182,14 +184,17 @@ class RecommendService:
                         {"$unwind": "$cafe_info"},
                         {"$project": {
                             "place_id": "$cafe_info.place_id",
+                            "final_name": "$cafe_info.final_name",
                             "original_name": "$cafe_info.original_name",
                             "location": "$cafe_info.location",
                             "rating": "$cafe_info.total_ratings",
                             "attributes": "$cafe_info.attributes",
                             "ai_tags": "$cafe_info.ai_tags",
+                            "tags": "$cafe_info.tags",
                             "vector_score": { "$meta": "vectorSearchScore" },
                             "matched_review": "$content",
-                            "opening_hours": "$cafe_info.opening_hours"
+                            "opening_hours": "$cafe_info.opening_hours",
+                            "contact": "$cafe_info.contact"
                         }}
                     ]
                     
@@ -212,7 +217,7 @@ class RecommendService:
                         c_loc = (item['location']['coordinates'][1], item['location']['coordinates'][0])
                         dist_meters = geodesic(user_loc, c_loc).meters
                         
-                        logger.info(f"📏 店名: {item.get('original_name')} | 距離: {int(dist_meters)}m")
+                        logger.info(f"📏 店名: {item.get('final_name')} | 距離: {int(dist_meters)}m")
 
                         if dist_meters <= 3000:
                             item['dist_meters'] = int(dist_meters)
@@ -269,7 +274,7 @@ class RecommendService:
                 
                 if target_tag:
                     pipeline.append({"$match": {"$or": [
-                        {"original_name": {"$regex": target_tag, "$options": "i"}},
+                        {"final_name": {"$regex": target_tag, "$options": "i"}},
                         {"attributes.types": {"$regex": target_tag, "$options": "i"}},
                         {"ai_tags.tag": {"$regex": target_tag, "$options": "i"}},
                         {"seo_tags": {"$regex": target_tag, "$options": "i"}}
@@ -288,6 +293,35 @@ class RecommendService:
                 open_results = filter_by_opening_hours(path_b_results)
                 final_data = open_results[:10]
 
+            # === 🔥 [新增] 標籤動態排序與視覺化處理 ===
+            def process_display_tags(raw_tags, query_text, btn_tag):
+                if not isinstance(raw_tags, list): return []
+                
+                # 1. 定義黑名單 (絕對不要顯示在 Flex Message 上)
+                negative_tags = {"溫度冷", "悶熱", "服務親切", "服務不佳", "服務效率不佳", "停車困難"}
+                
+                # 2. 定義高價值白名單 (自帶流量的明星標籤)
+                high_value_tags = {"工作友善", "不限時", "插座", "Wi-Fi", "深夜", "店貓", "店狗", "老宅", "甜點", "手沖精品"}
+                
+                # 3. 過濾黑名單
+                filtered_tags = [t for t in raw_tags if t not in negative_tags]
+                
+                # 4. 計算權重
+                def get_weight(tag):
+                    weight = 0
+                    # 絕對優先 (使用者命中)
+                    if query_text and tag in query_text: weight += 10
+                    if btn_tag and tag == btn_tag: weight += 10
+                    # 次要優先 (高價值特徵)
+                    if tag in high_value_tags: weight += 5
+                    return weight
+                
+                # 5. 排序並取前 3 個
+                sorted_tags = sorted(filtered_tags, key=get_weight, reverse=True)[:3]
+                
+                # 6. 使用引入的 TAG_EMOJI_MAP 轉成 Emoji 格式 (若字典沒有該 tag，則保持原文字)
+                return [TAG_EMOJI_MAP.get(t, t) for t in sorted_tags]
+            
             # === 格式化輸出 ===
             formatted_response = []
             for r in final_data:
@@ -298,15 +332,17 @@ class RecommendService:
 
                 formatted_response.append({
                     "place_id": r.get("place_id", str(r.get("_id"))),
-                    "original_name": r.get("original_name", "未知店家"),
+                    "final_name": r.get("final_name", "未知店家"),
+                    "original_name": r.get("original_name"),
                     "dist_meters": int(r.get("dist_meters", 0)),
                     "rating": rating_val,
-                    "ai_tags": r.get("ai_tags", [])[:3],
+                    "display_tags": process_display_tags(r.get("tags", []), search_query, cafe_tag),
                     "attributes": r.get("attributes", {}),
                     "total_ratings": review_count,
                     "match_reason": r.get("matched_review", "符合條件"),
                     # 🔥 [組員新增] 將 opening_hours 傳遞給前端 UI 判斷綠色營業中
-                    "opening_hours": r.get("opening_hours", {}) 
+                    "opening_hours": r.get("opening_hours", {}),
+                    "contact": r.get("contact", {}) 
                 })
             return {
                 "data": formatted_response,

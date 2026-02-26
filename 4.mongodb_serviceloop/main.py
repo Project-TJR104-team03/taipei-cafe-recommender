@@ -202,7 +202,8 @@ def show_user_list(reply_token, user_id, list_type):
 
     bubbles = []
     for cafe in cafes[:10]: # 最多顯示 10 筆
-        shop_name = cafe.get("original_name", "未知店家")
+        shop_name = cafe.get("final_name", "未知店家")
+        original_name = cafe.get("original_name", shop_name)
         place_id = cafe.get('place_id', '')
         
         # 🔥 修改這裡：對齊 MongoDB 的巢狀欄位結構，正確抓出星星與評論數
@@ -210,7 +211,9 @@ def show_user_list(reply_token, user_id, list_type):
         rating = db_ratings.get("rating", cafe.get("rating", 0.0))
         total_reviews = db_ratings.get("review_amount", cafe.get("total_ratings", 0))
         
-        map_url = f"https://www.google.com/maps/search/?api=1&query={quote(shop_name)}"
+        contact_info = cafe.get("contact", {})
+        db_map_url = contact_info.get("google_maps_url")
+        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(original_name)}"
         
         if list_type == "bookmarks":
             action_buttons = [
@@ -275,28 +278,28 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
    if not cafe_list:
         print("💡 查無資料，啟動備援模式")
         cafe_list = [
-            {"original_name": "測試用咖啡 (Mock)", "place_id": "mock_001", "rating": 4.8, "dist_meters": 150, "ai_tags": [{"tag": "測試"}]},
-            {"original_name": "路易莎 (備援)", "place_id": "mock_002", "rating": 4.2, "dist_meters": 300, "attributes": {"types": ["chain"]}}
+            {"final_name": "測試用咖啡 (Mock)", "place_id": "mock_001", "rating": 4.8, "dist_meters": 150, "ai_tags": [{"tag": "測試"}]},
+            {"final_name": "路易莎 (備援)", "place_id": "mock_002", "rating": 4.2, "dist_meters": 300, "attributes": {"types": ["chain"]}}
         ]
+    
 
    bubbles = []
    for cafe in cafe_list:
-        shop_name = cafe.get("original_name", "咖啡廳")
+        shop_name = cafe.get("final_name", "咖啡廳")
+        original_name = cafe.get("original_name", shop_name)
         place_id = cafe.get('place_id', '')
         
-        tags = []
-        if 'ai_tags' in cafe and isinstance(cafe['ai_tags'], list):
-            tags = [t.get('tag', '') for t in cafe['ai_tags'] if isinstance(t, dict)]
-        if not tags and 'attributes' in cafe and 'types' in cafe['attributes']:
-            tags = cafe['attributes']['types']
+        display_tags = cafe.get('display_tags', [])
         
         dist_m = cafe.get('dist_meters', 0)
         dist_str = f"{dist_m / 1000:.1f} km" if dist_m >= 1000 else f"{int(dist_m)} m"
         
-        rating = cafe.get('rating', cafe.get('attributes', {}).get('rating', 0.0))
-        total_reviews = cafe.get('total_ratings', cafe.get('user_ratings_total', 0))
+        rating = cafe.get('rating', 0.0) 
+        total_reviews = cafe.get('total_ratings', 0)
         
-        map_url = f"https://www.google.com/maps/search/?api=1&query={quote(shop_name)}"
+        contact_info = cafe.get("contact", {})
+        db_map_url = contact_info.get("google_maps_url")
+        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(original_name)}"
         
         open_text, open_color = get_opening_status(cafe)
         
@@ -312,9 +315,16 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
             {"type": "box", "layout": "baseline", "spacing": "none", "contents": dist_time_contents}
         ]
         
-        if tags:
+        if display_tags:
             info_box_contents.append(
-                {"type": "text", "text": f"🏷️ {' '.join(tags[:3])}", "size": "xs", "color": "#aaaaaa", "wrap": True}
+                {
+                    "type": "text", 
+                    "text": " · ".join(display_tags), # 用間隔號串接 (如: 🔌 插座 · 🌙 深夜)
+                    "size": "xs", 
+                    "color": "#888888", 
+                    "wrap": True, # 開啟換行，維持排版穩定
+                    "margin": "sm"
+                }
             )
         
         safe_name = shop_name.replace('&', '及').replace('=', '-')[:20]
