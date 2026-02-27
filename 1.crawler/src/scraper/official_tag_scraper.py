@@ -4,6 +4,7 @@ import time
 import random
 import io
 import pandas as pd
+import urllib.parse
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
@@ -118,93 +119,109 @@ def run(region="A-2", total_shards=1, shard_index=0):
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     wait = WebDriverWait(driver, 15)
     
-    batch_size = 3
+    batch_size = 10
     
     # 暫存容器
     new_tag_records = []
     base_updates = [] # 存 place_id, url, payment_options
 
     try:
-        # 使用 enumerate 重新計數 (因為 index 被切分後不連續)
         for i, (idx, row) in enumerate(df_to_process.iterrows(), 1):
             place_id = row.get('place_id')
             name = row.get('name')
-            address = row.get('formatted_address', '')
             
-            # 批次重啟
+            # --- 🌟 1. 唯一初始化 (關鍵：移除原本下方的重複定義) ---
+            is_scanned = False 
+            payment_options = ""
+            current_url = f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(name)}&query_place_id={place_id}"
+
+            # 批次重啟邏輯 (維持原樣)
             if (i - 1) % batch_size == 0 and i > 1:
+                print(f" 📦 批次重啟中...")
                 driver.quit()
                 driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
                 wait = WebDriverWait(driver, 15)
 
-            query = f"{name} {str(address)[:10]}"
-            print(f"[{i}/{len(df_to_process)}]  搜尋: {name}")
+            print(f"[{i}/{len(df_to_process)}] 🔗 處理: {name}")
 
+            # --- 🌟 2. 爬取嘗試區塊 ---
             try:
-                driver.get("https://www.google.com.tw/maps")
-                time.sleep(1)
+                driver.get(current_url)
+                time.sleep(4)
+                driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.ESCAPE)
                 
-                # Cookie 處理
+                # A. 點擊簡介按鈕
+                about_xpath = "//button[contains(@aria-label, '關於') or contains(@aria-label, '簡介') or contains(@aria-label, 'About') or .//div[contains(text(), '簡介') or contains(text(), '關於')]]"
+                about_btn = wait.until(EC.presence_of_element_located((By.XPATH, about_xpath)))
+                driver.execute_script("arguments[0].click();", about_btn)
+                
+                # B. 驗證面板是否真的開啟 (真相檢測點)
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div[role="region"]')))
+                time.sleep(4)
+                
+                # C. 滾動面板 (確保載入)
                 try:
-                    btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[aria-label*='全部接受'], button[aria-label*='Accept all']")))
-                    btn.click()
-                except: pass
-
-                box = driver.find_element(By.NAME, "q")
-                box.clear()
-                box.send_keys(query + Keys.ENTER)
-                time.sleep(3)
-
-                items = driver.find_elements(By.CLASS_NAME, "hfpxzc")
-                if items:
-                    items[0].click()
+                    pane = driver.find_element(By.CSS_SELECTOR, 'div[role="region"][aria-label*="關於"], div[role="region"][aria-label*="簡介"], div.m6QErb.DxyBCb')
+                    driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", pane)
+                    time.sleep(2)
+                except:
+                    driver.find_element(By.TAG_NAME, 'body').send_keys(Keys.PAGE_DOWN)
                     time.sleep(2)
 
-                # 抓取當前 Google Maps 網址
-                current_url = driver.current_url
-                
-                # 點擊關於
-                beautiful_text = ""
-                payment_options = ""
-                
-                try:
-                    about_btn = wait.until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@aria-label, '關於') or contains(@aria-label, '簡介')]")))
-                    driver.execute_script("arguments[0].click();", about_btn)
-                    wait.until(EC.text_to_be_present_in_element((By.CSS_SELECTOR, 'div[role="region"]'), ""))
-                    time.sleep(1)
+                # D. 抓取內容塊
+                soup = BeautifulSoup(driver.page_source, "html.parser")
+                info_blocks = soup.select('div[role="region"].m6QErb div.iP2t7d')
+
+                # --- 🌟 3. 終極成功判定 ---
+                if info_blocks and len(info_blocks) > 0:
+                    formatted_sections = []
+                    payment_methods = []
+                    for block in info_blocks:
+                        title_tag = block.find('h2')
+                        if not title_tag: continue
+                        category = title_tag.text.strip()
+                        items = block.find_all('li')
+                        valid_items = []
+                        for li in items:
+                            if "" in li.text: continue
+                            text_span = li.find('span', attrs={'aria-label': True})
+                            if text_span and "不提供" in text_span.get('aria-label', ''): continue
+                            icon_span = li.find('span', class_=lambda c: c and 'google-symbols' in c)
+                            if icon_span: icon_span.decompose()
+                            it = li.text.strip()
+                            if it: valid_items.append(it)
+                        if valid_items:
+                            formatted_sections.append(f"{category}：{' | '.join(valid_items)}")
+                            if "付款" in category: payment_methods.extend(valid_items)
+
+                    beautiful_text = " || ".join(formatted_sections)
+                    payment_options = ",".join(payment_methods) if payment_methods else ""
                     
-                    # 解析
-                    soup = BeautifulSoup(driver.page_source, "html.parser")
-                    info_blocks = soup.select('div[role="region"].m6QErb div.iP2t7d')
-                    raw_content = "\n".join([b.text for b in info_blocks])
-                    beautiful_text, payment_options = clean_google_tags_final(raw_content)
+                    # 🌟 只有真的有解析到內容，才翻轉為 True
+                    if len(beautiful_text) > 0:
+                        is_scanned = True 
+                        print(f"    ✅ 真正掃描成功: 抓到 {len(beautiful_text)} 個字")
 
-                except:
-                    # print(f"    無法進入簡介頁")
-                    pass
-
-                # 收集 Tag 資料
-                if beautiful_text:
-                    for section in beautiful_text.split(" || "):
-                        new_tag_records.append({
-                            'name': name,
-                            'place_id': place_id,
-                            'Tag': section,
-                            'Tag_id': "PENDING",
-                            'data_source': 'google簡介標籤'
-                        })
-                    # print(f"    標籤已抓取")
-
-                # 收集 Base Update 資料 (URL & Payment)
-                base_updates.append({
-                    'place_id': place_id,
-                    'google_maps_url': current_url,
-                    'payment_options': payment_options
-                })
+                    # 收集標籤資料
+                    if beautiful_text:
+                        for s in beautiful_text.split(" || "):
+                            new_tag_records.append({'name': name, 'place_id': place_id, 'Tag': s, 'Tag_id': "PENDING", 'data_source': 'google簡介標籤'})
+                else:
+                    print(f"    ⚠️ 雖然面板開了，但抓不到任何標籤文字，標記為 False")
+                    is_scanned = False
 
             except Exception as e:
-                print(f"     錯誤: {e}")
-                continue
+                print(f"    ❌ 過程出錯: {str(e).splitlines()[0]}")
+                is_scanned = False
+
+            # --- 🌟 4. [關鍵位置] 不論成功或失敗，這筆一定會存入 base_updates ---
+            # 請確保此 append 與外層的 try 對齊 (即迴圈內的最後一行)
+            base_updates.append({
+                'place_id': place_id,
+                'google_maps_url': current_url,
+                'payment_options': payment_options,
+                'is_scanned': is_scanned
+            })
             
             time.sleep(random.uniform(1, 2))
 
