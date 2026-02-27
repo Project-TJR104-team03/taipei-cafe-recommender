@@ -153,10 +153,11 @@ class OnlineMicroBatchLauncher:
                 success = False
                 for attempt in range(self.max_retries):
                     try:
+                        inputs = [TextEmbeddingInput(text=t, task_type="RETRIEVAL_DOCUMENT") for t in texts]
                         embeddings = model.get_embeddings(
-                            texts,
+                            inputs,
                             output_dimensionality=1536,
-                            task_type="RETRIEVAL_DOCUMENT")
+                        )
                         
                         for j, embedding in enumerate(embeddings):
                             result_record = batch[j]
