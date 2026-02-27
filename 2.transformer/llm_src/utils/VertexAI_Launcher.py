@@ -138,47 +138,53 @@ class OnlineMicroBatchLauncher:
             with open(local_output, 'r', encoding='utf-8') as f:
                 processed_count = sum(1 for _ in f)
             logger.info(f"♻️ 斷點續傳：將從第 {processed_count} 筆開始接續執行...")
+    
+        total_records = sum(1 for line in open(local_input, 'r', encoding='utf-8') if line.strip())
+        logger.info(f"📊 [Online 引擎] 總共有 {total_records} 筆向量資料待處理...")
 
-        with open(local_input, 'r', encoding='utf-8') as f:
-            lines = [json.loads(line) for line in f if line.strip()]
-        
-        total_records = len(lines)
-        logger.info(f"📊 [Online 引擎] 開始處理 {total_records} 筆向量資料...")
+        with open(local_input, 'r', encoding='utf-8') as f_in, open(local_output, 'a', encoding='utf-8') as f_out:
+            for _ in range(processed_count):
+                next(f_in, None)
 
-        with open(local_output, 'a', encoding='utf-8') as f_out:
-            for i in range(processed_count, total_records, self.batch_size):
-                batch = lines[i : i + self.batch_size]
-                texts = [item["content"] for item in batch]
-                
-                success = False
-                for attempt in range(self.max_retries):
-                    try:
-                        inputs = [TextEmbeddingInput(text=t, task_type="RETRIEVAL_DOCUMENT") for t in texts]
-                        embeddings = model.get_embeddings(
+            batch = []
+            
+            for i, line in enumerate(f_in, start=processed_count):
+                if not line.strip(): continue
+                batch.append(json.loads(line))
+
+                # 當湊滿 100 筆，或是已經讀到檔案的最後一筆時，開始執行 AI 任務
+                if len(batch) == self.batch_size or (i + 1) == total_records:
+                    texts = [item["content"] for item in batch]
+                    
+                    success = False
+                    for attempt in range(self.max_retries):
+                        try:
+                            inputs = [TextEmbeddingInput(text=t, task_type="RETRIEVAL_DOCUMENT") for t in texts]
+                            embeddings = model.get_embeddings(
                             inputs,
                             output_dimensionality=1536,
-                        )
+                            )
                         
-                        for j, embedding in enumerate(embeddings):
-                            result_record = batch[j]
-                            result_record["embedding_1536"] = embedding.values
-                            f_out.write(json.dumps(result_record, ensure_ascii=False) + '\n')
+                            for j, embedding in enumerate(embeddings):
+                                result_record = batch[j]
+                                result_record["embedding_1536"] = embedding.values
+                                f_out.write(json.dumps(result_record, ensure_ascii=False) + '\n')
                         
-                        f_out.flush()
+                            f_out.flush()
+                            logger.info(f"✅ 進度: {i + 1} / {total_records}")
 
-                        logger.info(f"✅ 進度: {min(i + self.batch_size, total_records)} / {total_records}")
-                        
-                        if (i + self.batch_size) % 500 == 0 or (i + self.batch_size) >= total_records:
-                            logger.info(f"☁️ 正在將進度同步備份至 GCS...")
-                            out_blob.upload_from_filename(local_output)
+                       
+                            if (i + 1) % 500 == 0 or (i + 1) >= total_records:
+                                logger.info(f"☁️ 正在將進度同步備份至 GCS...")
+                                out_blob.upload_from_filename(local_output)
 
-                        time.sleep(1) # 速率控制
-                        success = True
-                        break # 本批次成功，跳出重試迴圈
+                            time.sleep(1) # 速率控制
+                            success = True
+                            break # 本批次成功，跳出重試迴圈
 
-                    except Exception as e:
-                        logger.warning(f"⚠️ 批次 {i} 到 {i+len(batch)} 發生錯誤 (第 {attempt+1}/{self.max_retries} 次): {e}")
-                        time.sleep(10 * (attempt + 1)) # 遞增等待時間 (10s, 20s, 30s)
+                        except Exception as e:
+                            logger.warning(f"⚠️ 批次 {i} 到 {i+len(batch)} 發生錯誤 (第 {attempt+1}/{self.max_retries} 次): {e}")
+                            time.sleep(10 * (attempt + 1)) # 遞增等待時間 (10s, 20s, 30s)
             
              # 🌟 修正 3：如果重試 3 次都失敗，強制中斷任務，讓 Airflow 亮紅燈
                 if not success:
@@ -187,6 +193,8 @@ class OnlineMicroBatchLauncher:
                     if os.path.exists(local_output):
                         out_blob.upload_from_filename(local_output)
                     raise Exception(fatal_msg)
+                
+                batch = []
 
         logger.info(f"🎉 1536d 向量全部處理完成！已輸出至: {output_path}")
         if os.path.exists(local_input): os.remove(local_input)
