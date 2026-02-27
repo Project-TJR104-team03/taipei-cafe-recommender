@@ -105,31 +105,54 @@ class BatchJobLauncher:
 class OnlineMicroBatchLauncher:
     def __init__(self, project_id, location):
         vertexai.init(project=project_id, location=location)
+        self.storage_client = storage.Client(project=project_id)
         self.batch_size = 100
         self.max_retries = 3  # 🌟 設定每批次最大重試次數
 
     def submit(self, input_path, output_path, model_id):
-        if not os.path.exists(input_path):
-            error_msg = f"❌ 找不到來源檔案: {input_path}"
+
+        in_bucket_name, in_blob_name = self._parse_gcs_uri(input_path)
+        out_bucket_name, out_blob_name = self._parse_gcs_uri(output_path)
+
+        in_blob = self.storage_client.bucket(in_bucket_name).blob(in_blob_name)
+        out_blob = self.storage_client.bucket(out_bucket_name).blob(out_blob_name)
+
+        if not in_blob.exists():
+            error_msg = f"❌ GCS 找不到來源檔案: {input_path}"
             logger.error(error_msg)
             raise FileNotFoundError(error_msg)
         
-        with open(input_path, 'r', encoding='utf-8') as f:
-            lines = [json.loads(line) for line in f if line.strip()]
+        # if not os.path.exists(input_path):
+        #     error_msg = f"❌ 找不到來源檔案: {input_path}"
+        #     logger.error(error_msg)
+        #     raise FileNotFoundError(error_msg)
         
-        total_records = len(lines)
-        logger.info(f"📊 [Vertex 引擎] 開始處理 {total_records} 筆向量資料...")
+        # with open(input_path, 'r', encoding='utf-8') as f:
+        #     lines = [json.loads(line) for line in f if line.strip()]
+        local_input = f"transform/stageC/input_{int(time.time())}.jsonl"
+        local_output = f"transform/stageC/output_{int(time.time())}.jsonl"
+
+        logger.info(f"📥 從 GCS 下載來源檔案至暫存區...")
+        in_blob.download_to_filename(local_input)
 
         model = TextEmbeddingModel.from_pretrained("gemini-embedding-001")
 
         # 斷點續傳機制
         processed_count = 0
-        if os.path.exists(output_path):
-            with open(output_path, 'r', encoding='utf-8') as f:
+        if out_blob.exists():
+            logger.info(f"📥 發現 GCS 既有進度，下載同步中...")
+            out_blob.download_to_filename(local_output)
+            with open(local_output, 'r', encoding='utf-8') as f:
                 processed_count = sum(1 for _ in f)
-            logger.info(f"♻️ 發現既有進度，從第 {processed_count} 筆開始接續執行...")
+            logger.info(f"♻️ 斷點續傳：將從第 {processed_count} 筆開始接續執行...")
 
-        with open(output_path, 'a', encoding='utf-8') as f_out:
+        with open(local_input, 'r', encoding='utf-8') as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+        
+        total_records = len(lines)
+        logger.info(f"📊 [Online 引擎] 開始處理 {total_records} 筆向量資料...")
+
+        with open(local_output, 'a', encoding='utf-8') as f_out:
             for i in range(processed_count, total_records, self.batch_size):
                 batch = lines[i : i + self.batch_size]
                 texts = [item["content"] for item in batch]
@@ -138,7 +161,7 @@ class OnlineMicroBatchLauncher:
                 for attempt in range(self.max_retries):
                     try:
                         embeddings = model.get_embeddings(
-                            content=texts,
+                            texts,
                             output_dimensionality=1536,
                             task_type="RETRIEVAL_DOCUMENT")
                         
@@ -147,7 +170,14 @@ class OnlineMicroBatchLauncher:
                             result_record["embedding_1536"] = embedding.values
                             f_out.write(json.dumps(result_record, ensure_ascii=False) + '\n')
                         
+                        f_out.flush()
+
                         logger.info(f"✅ 進度: {min(i + self.batch_size, total_records)} / {total_records}")
+                        
+                        if (i + self.batch_size) % 500 == 0 or (i + self.batch_size) >= total_records:
+                            logger.info(f"☁️ 正在將進度同步備份至 GCS...")
+                            out_blob.upload_from_filename(local_output)
+
                         time.sleep(1) # 速率控制
                         success = True
                         break # 本批次成功，跳出重試迴圈
@@ -160,9 +190,13 @@ class OnlineMicroBatchLauncher:
                 if not success:
                     fatal_msg = f"❌ 批次 {i} 處理失敗已達上限，終止任務以保護資料完整性！"
                     logger.error(fatal_msg)
+                    if os.path.exists(local_output):
+                        out_blob.upload_from_filename(local_output)
                     raise Exception(fatal_msg)
 
         logger.info(f"🎉 1536d 向量全部處理完成！已輸出至: {output_path}")
+        if os.path.exists(local_input): os.remove(local_input)
+        if os.path.exists(local_output): os.remove(local_output)
 
 # ==========================================
 # [總司令部] 任務路由控制中心
@@ -171,7 +205,7 @@ if __name__ == "__main__":
     # ==========================
     # 🎯 策略切換開關
     # ==========================
-    TARGET_TASK = os.getenv("TARGET_TASK", "AUDIT")
+    TARGET_TASK = os.getenv("TARGET_TASK", None)
     logger.info(f"🚀 接收到 Router 任務指示: TARGET_TASK={TARGET_TASK}")
 
     if TARGET_TASK == "AUDIT":
@@ -187,9 +221,10 @@ if __name__ == "__main__":
         SOURCE_FILE = os.getenv("GCS_STAGE_C_EMBEDDING_JSONL_PATH", "transform/stageC/vertex_job_stage_c_embedding.jsonl")
         TASK_NAME = "embedding_generation"
         MODEL_ID = "gemini-embedding-001" 
+        OUTPUT_FILE = os.getenv("GCS_EMBEDDING_RESULTS_OUTPUT", "batch_output/embedding_generation/final_1536_vectors_for_mongo.jsonl")
         
-        launcher = OnlineMicroBatchLauncher(PROJECT_ID, LOCATION, BUCKET_NAME)
-        launcher.submit(SOURCE_FILE, TASK_NAME, MODEL_ID)
+        launcher = OnlineMicroBatchLauncher(PROJECT_ID, LOCATION)
+        launcher.submit(SOURCE_FILE, OUTPUT_FILE, MODEL_ID)
 
     else:
         logger.error("❌ 未知的任務類型設定")
