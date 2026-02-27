@@ -103,26 +103,19 @@ class BatchJobLauncher:
 # 引擎 2：微批次在線發射器 (適用於 Stage B - 1536d)
 # ==========================================
 class OnlineMicroBatchLauncher:
-    def __init__(self, project_id, location):
+    def __init__(self, project_id, location, bucket_name):
         vertexai.init(project=project_id, location=location)
         self.storage_client = storage.Client(project=project_id)
+        self.bucket_name = bucket_name
         self.batch_size = 100
         self.max_retries = 3  # 🌟 設定每批次最大重試次數
 
-    def _parse_gcs_uri(self, gcs_uri):
-        if not gcs_uri.startswith("gs://"):
-            raise ValueError(f"❌ 必須是標準 GCS 路徑 (gs://...): {gcs_uri}")
-        # 去掉 gs:// 後，用第一個 / 切割出 bucket_name 和 blob_name
-        parts = gcs_uri[5:].split("/", 1)
-        return parts[0], parts[1]
 
     def submit(self, input_path, output_path, model_id):
 
-        in_bucket_name, in_blob_name = self._parse_gcs_uri(input_path)
-        out_bucket_name, out_blob_name = self._parse_gcs_uri(output_path)
-
-        in_blob = self.storage_client.bucket(in_bucket_name).blob(in_blob_name)
-        out_blob = self.storage_client.bucket(out_bucket_name).blob(out_blob_name)
+        bucket = self.storage_client.bucket(self.bucket_name)
+        in_blob = bucket.blob(input_path)
+        out_blob = bucket.blob(output_path)
 
         if not in_blob.exists():
             error_msg = f"❌ GCS 找不到來源檔案: {input_path}"
@@ -218,12 +211,12 @@ if __name__ == "__main__":
         launcher.submit(SOURCE_FILE, TASK_NAME, MODEL_ID)
         
     elif TARGET_TASK == "EMBEDDING":
-        SOURCE_FILE = os.getenv("GCS_STAGE_C_EMBEDDING_JSONL_PATH", f"gs://{BUCKET_NAME}/transform/stageC/vertex_job_stage_c_embedding.jsonl")
+        SOURCE_FILE = os.getenv("GCS_STAGE_C_EMBEDDING_JSONL_PATH", "transform/stageC/vertex_job_stage_c_embedding.jsonl")
         TASK_NAME = "embedding_generation"
         MODEL_ID = "gemini-embedding-001"
-        OUTPUT_FILE = os.getenv("GCS_EMBEDDING_RESULTS_OUTPUT", f"gs://{BUCKET_NAME}/batch_output/embedding_generation/final_1536_vectors_for_mongo.jsonl")
+        OUTPUT_FILE = os.getenv("GCS_EMBEDDING_RESULTS_OUTPUT", "batch_output/embedding_generation/final_1536_vectors_for_mongo.jsonl")
 
-        launcher = OnlineMicroBatchLauncher(PROJECT_ID, LOCATION)
+        launcher = OnlineMicroBatchLauncher(PROJECT_ID, LOCATION, BUCKET_NAME)
         launcher.submit(SOURCE_FILE, OUTPUT_FILE, MODEL_ID)
 
     else:
