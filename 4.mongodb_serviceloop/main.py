@@ -3,6 +3,7 @@ import os
 import random
 import logging
 import asyncio
+import re
 from pathlib import Path
 from contextlib import asynccontextmanager
 from urllib.parse import quote
@@ -91,6 +92,24 @@ def get_button_reaction(tag):
         "這幾家評價都不錯，快去看看吧！🚀"
     ]
     return random.choice(openings), random.choice(closings)
+
+def clean_summary_text(text):
+    if not text: return ""
+    # 1. 切割「整體而言，」只取後面的重點
+    parts = text.split("整體而言，")
+    core = parts[-1] if len(parts) > 1 else text
+    
+    # 2. 自動過濾掉前方的「店名是一家」、「店名的」等冗長主詞 (容許範圍15字內)
+    core = re.sub(r"^[^，。]{1,15}?(是一家|是|的)", "", core)
+    
+    # 3. 移除結尾多餘的符號
+    core = core.strip(" 。-")
+    
+    # 4. 限制字數，確保排版簡潔 (超過 35 字加上刪節號)
+    if len(core) > 35:
+        core = core[:33] + "..."
+        
+    return core
 
 # --- ⭐ 星星評分組件產生器 ---
 def create_star_rating_box(rating, total_reviews):
@@ -296,6 +315,12 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
         
         rating = cafe.get('rating', 0.0) 
         total_reviews = cafe.get('total_ratings', 0)
+
+        raw_reason = cafe.get('custom_reason', '') 
+        
+        summary_text = clean_summary_text(raw_reason)
+        
+        contact_info = cafe.get("contact", {})
         
         contact_info = cafe.get("contact", {})
         db_map_url = contact_info.get("google_maps_url")
@@ -324,6 +349,20 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
                     "color": "#888888", 
                     "wrap": True, # 開啟換行，維持排版穩定
                     "margin": "sm"
+                }
+            )
+
+        # ✨ 新增：如果這家店有 summary，就把它加在標籤下面
+        if summary_text:
+            info_box_contents.append(
+                {
+                    "type": "text",
+                    "text": f"💡 {summary_text}",
+                    "size": "sm",            # 🔼 從 xxs 放大到 sm (跟上面的距離文字一樣大)
+                    "color": "#555555",      # 顏色稍微調深一點點，增加易讀性
+                    "wrap": True,            
+                    "maxLines": 2,           # 🔽 既然文字變精簡了，最多顯示兩行即可
+                    "margin": "md"           
                 }
             )
         
