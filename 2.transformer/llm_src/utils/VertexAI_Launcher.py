@@ -187,14 +187,14 @@ class OnlineMicroBatchLauncher:
                             time.sleep(10 * (attempt + 1)) # 遞增等待時間 (10s, 20s, 30s)
             
              # 🌟 修正 3：如果重試 3 次都失敗，強制中斷任務，讓 Airflow 亮紅燈
-                if not success:
-                    fatal_msg = f"❌ 批次 {i} 處理失敗已達上限，終止任務以保護資料完整性！"
-                    logger.error(fatal_msg)
-                    if os.path.exists(local_output):
-                        out_blob.upload_from_filename(local_output)
-                    raise Exception(fatal_msg)
-                
-                batch = []
+                    if not success:
+                        fatal_msg = f"❌ 批次 {i} 處理失敗已達上限，終止任務以保護資料完整性！"
+                        logger.error(fatal_msg)
+                        if os.path.exists(local_output):
+                            out_blob.upload_from_filename(local_output)
+                        raise Exception(fatal_msg)
+            
+                    batch = []
 
         logger.info(f"🎉 1536d 向量全部處理完成！已輸出至: {output_path}")
         if os.path.exists(local_input): os.remove(local_input)
