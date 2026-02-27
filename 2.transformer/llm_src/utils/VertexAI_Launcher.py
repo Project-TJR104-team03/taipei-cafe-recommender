@@ -8,7 +8,7 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 import vertexai
-from vertexai.language_models import TextEmbeddingModel
+from vertexai.language_models import TextEmbeddingInput, TextEmbeddingModel
 load_dotenv()
 
 # ==========================================
@@ -58,7 +58,7 @@ class BatchJobLauncher:
         }
 
         try:
-            logger.info(f"🔥 [Batch 引擎] 正在發射全量審計任務: {model_path}")
+            logger.info(f"🔥 [Batch 引擎] 正在發射任務 [{TASK_NAME}]: {model_path}")
             logger.info(f"🤖 使用模型: {model_id}")
             logger.info(f"📂 讀取來源: {gcs_input_uri}")
             parent = f"projects/{self.project_id}/locations/{self.location}"
@@ -120,7 +120,7 @@ class OnlineMicroBatchLauncher:
         total_records = len(lines)
         logger.info(f"📊 [Vertex 引擎] 開始處理 {total_records} 筆向量資料...")
 
-        model = TextEmbeddingModel.from_pretrained(model_id)
+        model = TextEmbeddingModel.from_pretrained("gemini-embedding-001")
 
         # 斷點續傳機制
         processed_count = 0
@@ -138,7 +138,7 @@ class OnlineMicroBatchLauncher:
                 for attempt in range(self.max_retries):
                     try:
                         embeddings = model.get_embeddings(
-                            texts,
+                            content=texts,
                             output_dimensionality=1536,
                             task_type="RETRIEVAL_DOCUMENT")
                         
@@ -188,7 +188,7 @@ if __name__ == "__main__":
         TASK_NAME = "embedding_generation"
         MODEL_ID = "gemini-embedding-001" 
         
-        launcher = BatchJobLauncher(PROJECT_ID, LOCATION, BUCKET_NAME)
+        launcher = OnlineMicroBatchLauncher(PROJECT_ID, LOCATION, BUCKET_NAME)
         launcher.submit(SOURCE_FILE, TASK_NAME, MODEL_ID)
 
     else:
