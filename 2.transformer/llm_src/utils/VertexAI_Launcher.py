@@ -109,6 +109,13 @@ class OnlineMicroBatchLauncher:
         self.batch_size = 100
         self.max_retries = 3  # 🌟 設定每批次最大重試次數
 
+    def _parse_gcs_uri(self, gcs_uri):
+        if not gcs_uri.startswith("gs://"):
+            raise ValueError(f"❌ 必須是標準 GCS 路徑 (gs://...): {gcs_uri}")
+        # 去掉 gs:// 後，用第一個 / 切割出 bucket_name 和 blob_name
+        parts = gcs_uri[5:].split("/", 1)
+        return parts[0], parts[1]
+
     def submit(self, input_path, output_path, model_id):
 
         in_bucket_name, in_blob_name = self._parse_gcs_uri(input_path)
@@ -122,20 +129,13 @@ class OnlineMicroBatchLauncher:
             logger.error(error_msg)
             raise FileNotFoundError(error_msg)
         
-        # if not os.path.exists(input_path):
-        #     error_msg = f"❌ 找不到來源檔案: {input_path}"
-        #     logger.error(error_msg)
-        #     raise FileNotFoundError(error_msg)
-        
-        # with open(input_path, 'r', encoding='utf-8') as f:
-        #     lines = [json.loads(line) for line in f if line.strip()]
-        local_input = f"transform/stageC/input_{int(time.time())}.jsonl"
-        local_output = f"transform/stageC/output_{int(time.time())}.jsonl"
+        local_input = f"/tmp/input_{int(time.time())}.jsonl"
+        local_output = f"/tmp/output_{int(time.time())}.jsonl"
 
         logger.info(f"📥 從 GCS 下載來源檔案至暫存區...")
         in_blob.download_to_filename(local_input)
 
-        model = TextEmbeddingModel.from_pretrained("gemini-embedding-001")
+        model = TextEmbeddingModel.from_pretrained(model_id)
 
         # 斷點續傳機制
         processed_count = 0
@@ -218,11 +218,11 @@ if __name__ == "__main__":
         launcher.submit(SOURCE_FILE, TASK_NAME, MODEL_ID)
         
     elif TARGET_TASK == "EMBEDDING":
-        SOURCE_FILE = os.getenv("GCS_STAGE_C_EMBEDDING_JSONL_PATH", "transform/stageC/vertex_job_stage_c_embedding.jsonl")
+        SOURCE_FILE = os.getenv("GCS_STAGE_C_EMBEDDING_JSONL_PATH", f"gs://{BUCKET_NAME}/transform/stageC/vertex_job_stage_c_embedding.jsonl")
         TASK_NAME = "embedding_generation"
-        MODEL_ID = "gemini-embedding-001" 
-        OUTPUT_FILE = os.getenv("GCS_EMBEDDING_RESULTS_OUTPUT", "batch_output/embedding_generation/final_1536_vectors_for_mongo.jsonl")
-        
+        MODEL_ID = "gemini-embedding-001"
+        OUTPUT_FILE = os.getenv("GCS_EMBEDDING_RESULTS_OUTPUT", f"gs://{BUCKET_NAME}/batch_output/embedding_generation/final_1536_vectors_for_mongo.jsonl")
+
         launcher = OnlineMicroBatchLauncher(PROJECT_ID, LOCATION)
         launcher.submit(SOURCE_FILE, OUTPUT_FILE, MODEL_ID)
 
