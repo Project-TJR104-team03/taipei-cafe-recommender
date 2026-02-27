@@ -7,6 +7,8 @@ from google.cloud import aiplatform_v1
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+import vertexai
+from vertexai.language_models import TextEmbeddingModel
 load_dotenv()
 
 # ==========================================
@@ -102,7 +104,7 @@ class BatchJobLauncher:
 # ==========================================
 class OnlineMicroBatchLauncher:
     def __init__(self, project_id, location):
-        self.client = genai.Client(vertexai=True, project=project_id, location=location)
+        vertexai.init(project=project_id, location=location)
         self.batch_size = 100
         self.max_retries = 3  # 🌟 設定每批次最大重試次數
 
@@ -116,7 +118,9 @@ class OnlineMicroBatchLauncher:
             lines = [json.loads(line) for line in f if line.strip()]
         
         total_records = len(lines)
-        logger.info(f"📊 [Online 引擎] 開始處理 {total_records} 筆向量資料...")
+        logger.info(f"📊 [Vertex 引擎] 開始處理 {total_records} 筆向量資料...")
+
+        model = TextEmbeddingModel.from_pretrained(model_id)
 
         # 斷點續傳機制
         processed_count = 0
@@ -133,19 +137,14 @@ class OnlineMicroBatchLauncher:
                 success = False
                 for attempt in range(self.max_retries):
                     try:
-                        # 🔥 調用 1536 維度
-                        response = self.client.models.embed_content(
-                            model=model_id,
-                            contents=texts,
-                            config=types.EmbedContentConfig(
-                                task_type="RETRIEVAL_DOCUMENT",
-                                output_dimensionality=1536 
-                            )
-                        )
-
-                        for j, embedding_obj in enumerate(response.embeddings):
+                        embeddings = model.get_embeddings(
+                            texts,
+                            output_dimensionality=1536,
+                            task_type="RETRIEVAL_DOCUMENT")
+                        
+                        for j, embedding in enumerate(embeddings):
                             result_record = batch[j]
-                            result_record["embedding_1536"] = embedding_obj.values
+                            result_record["embedding_1536"] = embedding.values
                             f_out.write(json.dumps(result_record, ensure_ascii=False) + '\n')
                         
                         logger.info(f"✅ 進度: {min(i + self.batch_size, total_records)} / {total_records}")
