@@ -172,13 +172,14 @@ if __name__ == "__main__":
     # ==========================
     # 🎯 策略切換開關
     # ==========================
-    TARGET_TASK = "AUDIT" # 切換 "STAGE_A" 或 "STAGE_B"
+    TARGET_TASK = os.getenv("TARGET_TASK", "AUDIT")
+    logger.info(f"🚀 接收到 Router 任務指示: TARGET_TASK={TARGET_TASK}")
 
     if TARGET_TASK == "AUDIT":
         SOURCE_FILE = os.getenv("GCS_STAGE_A_JSONL_PATH", "transform/stageA/vertex_job_stage_a.jsonl")
         TASK_NAME = "stage_a_full_audit"
         MODEL_ID = "gemini-2.0-flash-001" 
-        
+       
         # 啟動 Batch 引擎
         launcher = BatchJobLauncher(PROJECT_ID, LOCATION, BUCKET_NAME)
         launcher.submit(SOURCE_FILE, TASK_NAME, MODEL_ID)
