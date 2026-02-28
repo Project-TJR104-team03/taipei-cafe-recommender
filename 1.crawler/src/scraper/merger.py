@@ -30,6 +30,12 @@ MERGE_CONFIG = {
         "source_folder": "raw/checkpoint/",        # 來源：raw/checkpoint/ 下的所有分片
         "output_file": "raw/checkpoint/checkpoint_all.csv",
         "dedup_key": ["place_id"]                  # ★ 唯一鍵：一家店只留最新的進度
+    },
+    #  愛食記評論 (iFoodie)
+    "ifoodie": {
+        "source_folder": "raw/ifoodie/",               # 來源：愛食記分片檔所在的資料夾 (請確認是否與爬蟲存檔路徑一致)
+        "output_file": "raw/ifoodie/ifoodie_all.csv",  # 目標：完整的愛食記總表
+        "dedup_key": ["place_id", "reviewer_name"]            # 去重鍵：同一家店同一個作者只留最新的一筆評論 (可依實際欄位調整)
     }
 }
 
@@ -121,24 +127,23 @@ def update_store_base(bucket_name):
         return
 
     # 3. 執行合併 (Update Logic)
-    # 如果 base 裡原本就有這些欄位，先移除掉舊的，以免 merge 後變成 _x, _y
     cols_to_update = [c for c in ['google_maps_url', 'payment_options'] if c in df_updates.columns]
     
     if cols_to_update:
         print(f"   正在更新欄位: {cols_to_update}")
-        # 從 base 中移除即將被更新的欄位 (如果存在)
-        df_base = df_base.drop(columns=[c for c in cols_to_update if c in df_base.columns])
+
+        # 1. 把 place_id 設為 Index，這樣 Pandas 才知道誰要更新誰
+        df_base.set_index('place_id', inplace=True)
+        df_updates.set_index('place_id', inplace=True)
         
-        # 使用 Left Join 將新資料併入 (以 place_id 為 key)
-        # how='left' 確保 base.csv 的店家數量不會變少，也不會無故新增不存在 base 的店家
-        df_merged = df_base.merge(df_updates, on='place_id', how='left')
+        # 2. 核心魔法：只把 df_updates 有的資料，覆蓋掉 df_base 對應的格子
+        df_base.update(df_updates[cols_to_update])
         
-        # 填補空值 (美觀)
-        for col in cols_to_update:
-            df_merged[col] = df_merged[col].fillna('')
-            
-        # 4. 回存 Base.csv
-        upload_df_to_gcs(df_merged, bucket_name, base_file)
+        # 3. 把 Index 變回原本的欄位
+        df_base.reset_index(inplace=True)
+        
+        # 4. 回存 Base.csv 
+        upload_df_to_gcs(df_base, bucket_name, base_file)
     else:
         print("   分片中沒有 google_maps_url 或 payment_options 欄位，無需更新。")
 
@@ -194,9 +199,9 @@ def run(region=None):
         
         # 5. 上傳結果
         upload_df_to_gcs(full_df, BUCKET_NAME, config['output_file'])
-
-    update_store_base(BUCKET_NAME)
     
+    update_store_base(BUCKET_NAME)
+
     print("\n[Merger] 所有合併任務執行完畢！")
 
 if __name__ == "__main__":

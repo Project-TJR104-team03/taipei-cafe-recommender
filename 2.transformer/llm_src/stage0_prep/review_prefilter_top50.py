@@ -6,16 +6,19 @@ from io import BytesIO
 from google.cloud import storage
 from datetime import datetime, timedelta
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 class ReviewPreFilter:
-    def __init__(self, bucket_name, gcs_raw_path, local_output_path):
-        self.client = storage.Client()
+    def __init__(self, project_id, bucket_name, gcs_raw_path, gcs_output_path):
+        self.client = storage.Client(project=project_id)
         self.bucket = self.client.bucket(bucket_name)
         self.gcs_raw_path = gcs_raw_path
-        self.local_output_path = local_output_path
+        self.gcs_output_path = gcs_output_path 
         self.reference_date = datetime.now()
 
     def _parse_reviewer_count(self, text):
@@ -90,29 +93,33 @@ class ReviewPreFilter:
             return None
         
         # 1. 預過濾
-        df = df.dropna(subset=['content']).drop_duplicates(subset=['place_name', 'content'])
+        df = df.dropna(subset=['content']).drop_duplicates(subset=['place_id', 'content'])
         
         # 2. 評分
         df_scored = self.calculate_quality_score(df)
         
         # 3. 核心邏輯：每家店取 Top 50 品質優選
         df_top_50 = (
-            df_scored.sort_values(['place_name', 'quality_score'], ascending=[True, False])
-            .groupby('place_name')
+            df_scored.sort_values(['place_id', 'quality_score'], ascending=[True, False])
+            .groupby('place_id')
             .head(50)
             .reset_index(drop=True)
         )
         
-        # 4. 本地存取
-        df_top_50.to_csv(self.local_output_path, index=False, encoding='utf-8-sig')
-        logger.info(f"蒸餾完成。本地產出: {len(df_top_50)} 筆")
+        # 4. 雲端存取
+        output_blob = self.bucket.blob(self.gcs_output_path)
+        csv_data = df_top_50.to_csv(index=False, encoding='utf-8-sig')
+        output_blob.upload_from_string(csv_data, content_type='text/csv')
+        
+        logger.info(f"蒸餾完成。已將 {len(df_top_50)} 筆資料上傳至 GCS: gs://{self.bucket.name}/{self.gcs_output_path}")
         return df_top_50
 
 if __name__ == "__main__":
     CONFIG = {
-        "bucket_name": "XXX",
-        "gcs_raw_path": "XXX",
-        "local_output_path": "reviews_top50_distilled.csv"
+        "project_id": os.getenv("PROJECT_ID", "project-tjr104-cafe"),
+        "bucket_name": os.getenv("BUCKET_NAME", "tjr104-cafe-datalake"),
+        "gcs_raw_path": os.getenv("GCS_RAW_REVIEWS_PATH", "raw/comments/reviews_all.csv"),
+        "gcs_output_path": os.getenv("GCS_DISTILLED_CSV_PATH", "transform/stage0/reviews_top50_distilled.csv")
     }
     filter_engine = ReviewPreFilter(**CONFIG)
     filter_engine.run()

@@ -3,6 +3,7 @@ import os
 import random
 import logging
 import asyncio
+import re
 from pathlib import Path
 from contextlib import asynccontextmanager
 from urllib.parse import quote
@@ -53,16 +54,29 @@ chat_agent = ChatAgent()
 
 user_sessions = {}
 blacklist_sessions = {} 
+pending_search_sessions = {}  # 新增：紀錄「尚未定位」的待辦搜尋
+
+# --- 分類 10 標籤：按鈕翻譯字典 ---
+MACRO_TAG_MAPPING = {
+    "絕對不限時": "不限時",
+    "插座筆電族": "插座,工作友善",
+    "安靜好讀書": "安靜",
+    "復古老宅風": "老宅,復古",
+    "質感文青風": "文青,韓系風格",
+    "個性工業風": "工業風格",
+    "甜點下午茶": "甜點",
+    "職人手沖店": "手沖精品,自家烘焙",
+    "深夜夜貓族": "深夜",
+    "有毛孩療癒": "寵物友善,店貓,店狗"
+}
 
 # --- 輔助函式 ---
 def get_standard_quick_reply():
     return QuickReply(items=[
         QuickReplyButton(action={"type": "location", "label": "📍 點我找附近的店"}),
+        QuickReplyButton(action=PostbackAction(label="🏷️ 依情境找店", data="action=explore")),
         QuickReplyButton(action=PostbackAction(label="📂 我的收藏清單", data="action=view_keep")),
-        QuickReplyButton(action=PostbackAction(label="🚫 我的黑名單", data="action=view_blacklist")),
-        QuickReplyButton(action=PostbackAction(label="🍰 附近哪裡有甜點", data="action=quick_tag&tag=甜點")), 
-        QuickReplyButton(action=PostbackAction(label="💻 找有插座的店", data="action=quick_tag&tag=插座")),
-        QuickReplyButton(action=PostbackAction(label="🌙 開到深夜", data="action=quick_tag&tag=深夜"))
+        QuickReplyButton(action=PostbackAction(label="🚫 我的黑名單", data="action=view_blacklist"))        
     ])
 
 # ✨ 新增：查看清單時「專用」的快捷按鈕 (多了一顆看完了)
@@ -70,11 +84,9 @@ def get_list_view_quick_reply():
     return QuickReply(items=[
         QuickReplyButton(action=PostbackAction(label="👀 看完了，繼續找店", data="action=close_list")),
         QuickReplyButton(action={"type": "location", "label": "📍 點我找附近的店"}),
+        QuickReplyButton(action=PostbackAction(label="🏷️ 依情境找店", data="action=explore")),
         QuickReplyButton(action=PostbackAction(label="📂 我的收藏清單", data="action=view_keep")),
-        QuickReplyButton(action=PostbackAction(label="🚫 我的黑名單", data="action=view_blacklist")),
-        QuickReplyButton(action=PostbackAction(label="🍰 附近哪裡有甜點", data="action=quick_tag&tag=甜點")), 
-        QuickReplyButton(action=PostbackAction(label="💻 找有插座的店", data="action=quick_tag&tag=插座")),
-        QuickReplyButton(action=PostbackAction(label="🌙 開到深夜", data="action=quick_tag&tag=深夜"))
+        QuickReplyButton(action=PostbackAction(label="🚫 我的黑名單", data="action=view_blacklist"))        
     ])
 
 def get_button_reaction(tag):
@@ -91,6 +103,24 @@ def get_button_reaction(tag):
         "這幾家評價都不錯，快去看看吧！🚀"
     ]
     return random.choice(openings), random.choice(closings)
+
+def clean_summary_text(text):
+    if not text: return ""
+    # 1. 切割「整體而言，」只取後面的重點
+    parts = text.split("整體而言，")
+    core = parts[-1] if len(parts) > 1 else text
+    
+    # 2. 自動過濾掉前方的「店名是一家」、「店名的」等冗長主詞 (容許範圍15字內)
+    core = re.sub(r"^[^，。]{1,15}?(是一家|是|的)", "", core)
+    
+    # 3. 移除結尾多餘的符號
+    core = core.strip(" 。-")
+    
+    # 4. 限制字數，確保排版簡潔 (超過 35 字加上刪節號)
+    if len(core) > 35:
+        core = core[:33] + "..."
+        
+    return core
 
 # --- ⭐ 星星評分組件產生器 ---
 def create_star_rating_box(rating, total_reviews):
@@ -187,6 +217,53 @@ def get_opening_status(cafe_data):
         return next_open_info, "#f56565"
         
     return "今日未營業", "#999999"
+
+# ✨ 新增：發送 4 大主題探索卡片
+def send_explore_categories(reply_token):
+    def create_card(title, img_url, buttons_data):
+        buttons = []
+        for btn in buttons_data:
+            buttons.append({
+                "type": "button", "style": "secondary", "color": "#FFFFFF", "cornerRadius": "md", "paddingAll": "8px", "margin": "sm",
+                "action": {"type": "postback", "label": btn["label"], "data": f"action=quick_tag&tag={btn['tag']}"},
+                "contents": [{"type": "text", "text": btn["label"], "color": "#020201", "size": "sm", "weight": "bold", "align": "center"}]
+            })
+        return {
+            "type": "bubble", "size": "kilo", 
+            "styles": {"body": {"backgroundColor": "#FAF3E8"}},
+            "body": {
+                "type": "box", "layout": "vertical", "paddingAll": "12px", 
+                "contents": [
+                    {"type": "box", "layout": "vertical", "alignItems": "center",
+                        "contents": [
+                            {"type": "image", "url": img_url, "size": "lg", "aspectMode": "fit"},
+                            {"type": "text", "text": title, "weight": "bold", "size": "sm", "color": "#333333", "margin": "md"}]},
+                    {"type": "separator", "color": "#E6D5C3", "margin": "sm"},
+                    {"type": "box", "layout": "vertical", "margin": "md", "spacing": "sm", "contents": buttons}
+                ]}}
+
+    bubbles = [
+        create_card("生產力與空間", "https://cdn-icons-png.flaticon.com/512/5956/5956592.png", [
+            {"label": "⏳ 不限時", "tag": "絕對不限時"},
+            {"label": "🔌 有插座", "tag": "插座筆電族"},
+            {"label": "📖 適合讀書", "tag": "安靜好讀書"}
+        ]),
+        create_card("視覺與氛圍", "https://cdn-icons-png.flaticon.com/512/3221/3221545.png", [
+            {"label": "🕰️ 老宅風", "tag": "復古老宅風"},
+            {"label": "🎨 文青風", "tag": "質感文青風"},
+            {"label": "🏭 工業風", "tag": "個性工業風"}
+        ]),
+        create_card("餐飲特色", "https://cdn-icons-png.flaticon.com/512/3413/3413580.png", [
+            {"label": "🍰 吃甜點", "tag": "甜點下午茶"},
+            {"label": "☕ 喝手沖", "tag": "職人手沖店"}
+        ]),
+        create_card("特殊情境", "https://cdn-icons-png.flaticon.com/512/3504/3504865.png", [
+            {"label": "🌙 開到深夜", "tag": "深夜夜貓族"},
+            {"label": "🐾 寵物友善", "tag": "有毛孩療癒"}
+        ])]
+
+    flex_message = FlexSendMessage(alt_text="探索主題咖啡廳", contents={"type": "carousel", "contents": bubbles})
+    line_bot_api.reply_message(reply_token, flex_message)
 
 # ✨ 顯示「我的收藏」或「我的黑名單」卡片
 def show_user_list(reply_token, user_id, list_type):
@@ -296,6 +373,12 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
         
         rating = cafe.get('rating', 0.0) 
         total_reviews = cafe.get('total_ratings', 0)
+
+        raw_reason = cafe.get('custom_reason', '') 
+        
+        summary_text = clean_summary_text(raw_reason)
+        
+        contact_info = cafe.get("contact", {})
         
         contact_info = cafe.get("contact", {})
         db_map_url = contact_info.get("google_maps_url")
@@ -324,6 +407,20 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
                     "color": "#888888", 
                     "wrap": True, # 開啟換行，維持排版穩定
                     "margin": "sm"
+                }
+            )
+
+        # ✨ 新增：如果這家店有 summary，就把它加在標籤下面
+        if summary_text:
+            info_box_contents.append(
+                {
+                    "type": "text",
+                    "text": f"💡 {summary_text}",
+                    "size": "sm",            # 🔼 從 xxs 放大到 sm (跟上面的距離文字一樣大)
+                    "color": "#555555",      # 顏色稍微調深一點點，增加易讀性
+                    "wrap": True,            
+                    "maxLines": 2,           # 🔽 既然文字變精簡了，最多顯示兩行即可
+                    "margin": "md"           
                 }
             )
         
@@ -481,6 +578,15 @@ def handle_location(event):
     
     user_service.update_user_location(user_id, lat, lng)
 
+    # 檢查是否有「暫存的搜尋需求」
+    if user_id in pending_search_sessions:
+        ui_tag = pending_search_sessions.pop(user_id) # 取出並清除暫存
+        mapped_tag = MACRO_TAG_MAPPING.get(ui_tag, ui_tag) # 翻譯為底層標籤
+        
+        op, cl = get_button_reaction(ui_tag)
+        asyncio.create_task(process_recommendation(event.reply_token, lat, lng, user_id=user_id, tag=mapped_tag, opening=op, closing=cl))
+        return
+
     if not user_service.check_user_exists(user_id):
         quick_reply = QuickReply(items=[
             QuickReplyButton(action=PostbackAction(label="📖 安靜讀書", data="action=onboarding&tag=安靜")),
@@ -511,14 +617,24 @@ def handle_postback(event):
         )
         return
 
+    # ✨ 新增：呼叫 4 大分類探索卡片
+    if action == "explore":
+        send_explore_categories(event.reply_token)
+        return
+    
     if action == "quick_tag":
-        tag = params.get('tag')
+        ui_tag = params.get('tag')
+        mapped_tag = MACRO_TAG_MAPPING.get(ui_tag, ui_tag)
         if loc:
-            user_service.update_user_location(user_id, lat, lng, tag=tag)
-            op, cl = get_button_reaction(tag)
-            asyncio.create_task(process_recommendation(event.reply_token, lat, lng, user_id=user_id, tag=tag, opening=op, closing=cl))
+            user_service.update_user_location(user_id, lat, lng, tag=mapped_tag)
+            op, cl = get_button_reaction(ui_tag)
+            asyncio.create_task(process_recommendation(event.reply_token, lat, lng, user_id=user_id, tag=mapped_tag, opening=op, closing=cl))
         else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請先傳送您的位置📍", quick_reply=get_standard_quick_reply()))
+            pending_search_sessions[user_id] = ui_tag
+            line_bot_api.reply_message(
+                event.reply_token, 
+                TextSendMessage(text=f"收到！你想找「{ui_tag}」對吧？\n請點擊下方 📍 點我找附近的店，我馬上幫你找！", quick_reply=get_standard_quick_reply())
+            )
         return
 
     if action == "onboarding":

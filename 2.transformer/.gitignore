@@ -5,7 +5,7 @@ __pycache__/
 venv/
 .venv/
 .pytest_cache/
-
+pyproject.toml
 
 # 資料與金鑰 (最重要！)
 data/

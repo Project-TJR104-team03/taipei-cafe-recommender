@@ -1,11 +1,15 @@
 import json
 import logging
 import os
-import tag_config  # 直接引入你的配置檔
+from google.cloud import storage
+from dotenv import load_dotenv
+from configs import tag_config
 from typing import Dict, Any, List, Optional, Set, Tuple
 
+load_dotenv()
 # 設定系統觀測性 (Observability) 日誌格式
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class TagsMerger:
     """
@@ -127,22 +131,22 @@ class TagsMerger:
             }
         }
 
-def run_batch_pipeline(raw_file: str, stage_a_file: str, output_file: str, tag_config_dict: Dict[str, Any]):
-    """全店批次處理管線 (Batch Processing Pipeline)"""
-    logging.info("Initializing Batch Merge Pipeline...")
+
+def run_batch_pipeline(PROJECT_ID: str, BUCKET_NAME: str, gcs_raw_file: str, gcs_stage_a_file: str, gcs_output_file: str, tag_config_dict: Dict[str, Any]):
+    logger.info("Initializing Batch Merge Pipeline on GCS...")
+    client = storage.Client(project=PROJECT_ID)
+    bucket = client.bucket(BUCKET_NAME)
 
     try:
-        with open(raw_file, 'r', encoding='utf-8') as f:
-            raw_data_input = json.load(f)
-        with open(stage_a_file, 'r', encoding='utf-8') as f:
-            stage_a_dict = json.load(f)
-    except FileNotFoundError as e:
-        logging.error(f"File not found: {e}. 請確認檔案名稱與路徑。")
+        raw_data_input = json.loads(bucket.blob(gcs_raw_file).download_as_text(encoding='utf-8'))
+        stage_a_dict = json.loads(bucket.blob(gcs_stage_a_file).download_as_text(encoding='utf-8'))
+    except Exception as e:
+        logger.error(f"GCS 讀取失敗: {e}。請確認路徑。")
         return
 
     # 自動轉型防護網
     if isinstance(raw_data_input, list):
-        logging.info("Detected Raw Data as a List. Auto-converting to Dictionary...")
+        logger.info("Detected Raw Data as a List. Auto-converting to Dictionary...")
         raw_data_dict = {item.get("place_id"): item for item in raw_data_input if isinstance(item, dict) and "place_id" in item}
     else:
         raw_data_dict = raw_data_input
@@ -152,7 +156,7 @@ def run_batch_pipeline(raw_file: str, stage_a_file: str, output_file: str, tag_c
     error_logs = []
 
     total_shops = len(stage_a_dict)
-    logging.info(f"Loaded {total_shops} shops. Starting merge...")
+    logger.info(f"Loaded {total_shops} shops. Starting merge...")
 
     for place_id, stage_a_data in stage_a_dict.items():
         try:
@@ -163,26 +167,27 @@ def run_batch_pipeline(raw_file: str, stage_a_file: str, output_file: str, tag_c
             merged_record = merger.merge(place_id, raw_data, stage_a_data)
             final_results[place_id] = merged_record
         except Exception as e:
-            logging.error(f"Error processing shop [ {place_id} ]: {str(e)}")
+            logger.error(f"Error processing shop [ {place_id} ]: {str(e)}")
             error_logs.append({"place_id": place_id, "error": str(e)})
 
+    # 寫入GCS
     try:
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(final_results, f, ensure_ascii=False, indent=2)
+        bucket.blob(gcs_output_file).upload_from_string(json.dumps(final_results, ensure_ascii=False, indent=2), content_type='application/json')
         
-        logging.info("================ Pipeline Summary ================")
-        logging.info(f"Total processed: {total_shops}")
-        logging.info(f"Successfully merged: {len(final_results)}")
-        logging.info(f"Failed/Errors: {len(error_logs)}")
-        logging.info("==================================================")
+        logger.info("================ Pipeline Summary ================")
+        logger.info(f"Total processed: {total_shops}")
+        logger.info(f"Successfully merged: {len(final_results)}")
+        logger.info(f"Failed/Errors: {len(error_logs)}")
+        logger.info(f"Output saved to: gs://{BUCKET_NAME}/{gcs_output_file}")
+        logger.info("==================================================")
         
         if error_logs:
-            with open("merge_error_logs.json", 'w', encoding='utf-8') as f:
-                json.dump(error_logs, f, ensure_ascii=False, indent=2)
-            logging.warning("Check merge_error_logs.json for details.")
+            error_log_path = gcs_output_file.replace(".json", "_errors.json")
+            bucket.blob(error_log_path).upload_from_string(json.dumps(error_logs, ensure_ascii=False, indent=2), content_type='application/json')
+            logger.warning(f"Check error logs at gs://{BUCKET_NAME}/{error_log_path}")
 
     except Exception as e:
-        logging.error(f"Failed to save output file: {str(e)}")
+        logger.error(f"Failed to save output file: {str(e)}")
 
 # ==========================================
 # 執行區塊 (動態解析 Config)
@@ -202,13 +207,11 @@ if __name__ == "__main__":
         "allowed_tags": list(dynamic_tags)
     }
 
-    RAW_FILE_NAME = "cafe_data_final.json"
-    STAGE_A_FILE_NAME = "final_readable_audit.json"
-    OUTPUT_FILE_NAME = "normalized_merged_data.json"
-
     run_batch_pipeline(
-        raw_file=RAW_FILE_NAME,
-        stage_a_file=STAGE_A_FILE_NAME,
-        output_file=OUTPUT_FILE_NAME,
+        PROJECT_ID=os.getenv("PROJECT_ID"),
+        BUCKET_NAME=os.getenv("BUCKET_NAME"),
+        gcs_raw_file=os.getenv("GCS_CAFE_DATA_FINAL_PATH"),
+        gcs_stage_a_file=os.getenv("GCS_FINAL_AUDIT_JSON_PATH"),
+        gcs_output_file=os.getenv("GCS_NORMALIZED_MERGED_PATH", "transform/stageB/normalized_merged_data.json"),
         tag_config_dict=DYNAMIC_TAG_CONFIG
     )

@@ -3,15 +3,18 @@ import pandas as pd
 import json
 import time
 import os
+import io
 import vertexai
 from vertexai.generative_models import GenerativeModel, GenerationConfig
 from google.cloud import storage
+from dotenv import load_dotenv
 
+load_dotenv()
 
 # 模型與 API 配置
-PROJECT_ID = os.getenv("GCP_PROJECT_ID", "project-tjr104-cafe") 
+PROJECT_ID = os.getenv("PROJECT_ID", "project-tjr104-cafe") 
 LOCATION = "us-central1"  # 建議使用 us-central1，模型支援度最高
-MODEL_NAME = os.getenv("AI_MODEL", "gemini-2.5-flash") 
+MODEL_NAME = "gemini-2.5-flash"
 
 # 效能與速率限制 (10 RPM 安全設定)
 BATCH_SIZE = 30  
@@ -47,16 +50,12 @@ def ai_cleaner_batch(model, batch_data):
 
 def clean_name_by_gemini():
     # ================= 配置區 =================
-    BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "tjr104-cafe-datalake")
-    PROJECT_FOLDER = os.getenv("PROJECT_FOLDER", "cafe_cleaning_project")
-
-    # --- 自動生成的路徑 ---
-    PROJECT_ROOT = f"gs://{BUCKET_NAME}/{PROJECT_FOLDER}"
-    INPUT_CSV = f"{PROJECT_ROOT}/processed/cafes_stage1_cleaned.csv"
-    INPUT_JSON = f"{PROJECT_ROOT}/processed/cafes_raw_tags.json"
-    PROGRESS_FILE = f"{PROJECT_ROOT}/staging/cleaning_progress.json"
-    TEMP_CSV = f"{PROJECT_ROOT}/staging/temp_results.csv"
-    OUTPUT_FINAL = f"{PROJECT_ROOT}/output/cafes_stage2_final_all.csv"
+    BUCKET_NAME = os.getenv("BUCKET_NAME", "tjr104-cafe-datalake")
+    INPUT_CSV = os.getenv("GCS_NAME_REGEX_CLEAND")
+    INPUT_JSON = os.getenv("GCS_TAG_REGEX")
+    PROCESS_FILE = os.getenv("GCS_NAME_CLEAN_JSON_PROCESS", "transform/stage0/name_clean_process/cleaning_process.json")
+    TEMP_CSV = os.getenv("GCS_NAME_CLEAN_CSV_PROCESS", "transform/stage0/name_clean_process/temp_results.csv")
+    OUTPUT_FINAL = os.getenv("GCS_NAME_CLEAN_FINISH","transform/stage0/name_clean_finished.csv")
     
     client = storage.Client()
     bucket = client.bucket(BUCKET_NAME)
@@ -64,10 +63,12 @@ def clean_name_by_gemini():
     # 1. 從 GCS 讀取原始資料
     print(f"📡 正在從 GCS 讀取資料: {BUCKET_NAME}...")
     try:
-        df_stage1 = pd.read_csv(INPUT_CSV)
-        json_blob_path = INPUT_JSON.replace(f"gs://{BUCKET_NAME}/", "")
-        json_data = bucket.blob(json_blob_path).download_as_text()
-        tags_data = json.loads(json_data)
+        csv_blob = bucket.blob(INPUT_CSV)
+        df_stage1 = pd.read_csv(io.BytesIO(csv_blob.download_as_bytes()))
+        
+        # 讀取 JSON
+        json_blob = bucket.blob(INPUT_JSON)
+        tags_data = json.loads(json_blob.download_as_text())
     except Exception as e:
         print(f"❌ 讀取失敗: {e}")
         return
@@ -75,11 +76,14 @@ def clean_name_by_gemini():
     # 2. 讀取雲端已完成進度 (修正點)
     processed_ids = []
     try:
-        with pd.io.common.get_handle(PROGRESS_FILE, "r") as handles:
-            processed_ids = json.load(handles.handle)
-        print(f"🔄 發現進度檔，已完成 {len(processed_ids)} 筆")
-    except:
-        print("💡 找不到進度檔，將從頭開始處理。")
+        process_blob = bucket.blob(PROCESS_FILE)
+        if process_blob.exists():
+            processed_ids = json.loads(process_blob.download_as_text())
+            print(f"🔄 發現進度檔，已完成 {len(processed_ids)} 筆")
+        else:
+            print("💡 找不到進度檔，將從頭開始處理。")
+    except Exception as e:
+        print(f"💡 讀取進度檔發生狀況，將從頭開始處理。({e})")
     
     # 3. 過濾任務
     tasks = []
@@ -102,7 +106,10 @@ def clean_name_by_gemini():
     # 4. 讀取暫存結果
     all_results = []
     try:
-        all_results = pd.read_csv(TEMP_CSV).to_dict('records')
+        temp_blob = bucket.blob(TEMP_CSV)
+        if temp_blob.exists():
+            temp_df = pd.read_csv(io.BytesIO(temp_blob.download_as_bytes()))
+            all_results = temp_df.to_dict('records')
     except:
         pass
 
@@ -130,7 +137,7 @@ def clean_name_by_gemini():
             # --- 立即同步至 GCS (確保 Cloud Run 中斷時進度不遺失) ---
             try:
                 # 儲存進度 ID 清單
-                bucket.blob(PROGRESS_FILE.replace(f"gs://{BUCKET_NAME}/", "")).upload_from_string(
+                bucket.blob(PROCESS_FILE.replace(f"gs://{BUCKET_NAME}/", "")).upload_from_string(
                     json.dumps(processed_ids), content_type='application/json'
                 )
                 
@@ -155,8 +162,10 @@ def clean_name_by_gemini():
     print("\n💾 正在生成最終合併檔案...")
     result_df = pd.DataFrame(all_results)
     final_df = pd.merge(df_stage1, result_df[['place_id', 'final_name', 'branch']], on="place_id", how="left")
-    final_df.to_csv(OUTPUT_FINAL, index=False, encoding="utf-8-sig")
-    print(f"✨ 全量任務完成！檔案：{OUTPUT_FINAL}")
+    final_csv_string = final_df.to_csv(index=False, encoding="utf-8-sig")
+    bucket.blob(OUTPUT_FINAL).upload_from_string(final_csv_string, content_type='text/csv')
+    
+    print(f"✨ 全量任務完成！檔案已上傳至 GCS：gs://{BUCKET_NAME}/{OUTPUT_FINAL}")
 
 if __name__ == "__main__":
     clean_name_by_gemini()

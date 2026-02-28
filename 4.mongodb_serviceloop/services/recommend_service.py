@@ -4,7 +4,8 @@ import traceback
 from datetime import datetime
 from geopy.distance import geodesic
 from typing import Any, Dict, List, Optional
-
+import json
+from vertexai.generative_models import GenerationConfig
 from database import db_client
 from utils import is_google_period_open
 from locations import ALL_LOCATIONS
@@ -45,6 +46,72 @@ class RecommendService:
         except Exception as e:
             logger.error(f"❌ Embedding Error: {e}")
             return None
+        
+    def _generate_reasons_batch(self, user_query: str, cafes: list) -> dict:
+        """根據使用者需求，一次性請 AI 從各家店的 summary 中萃取「一句話推薦理由」"""
+        if not user_query or not self.intent_agent.model:
+            return {}
+        
+        cafe_info_list = []
+        for c in cafes:
+            info = c.get("summary", c.get("scores", {}).get("summary", ""))
+            if not info:
+                info = c.get("matched_review", "") 
+            
+            cafe_info_list.append({
+                "id": str(c.get("place_id", c.get("_id"))),
+                "info": info[:200] 
+            })
+            
+        prompt = f"""
+        【任務】
+        使用者目前找咖啡廳的需求為：「{user_query}」
+        以下是系統推薦的咖啡廳名單。請針對「使用者的需求」，從 info 中濃縮出「一句話的推薦理由」(直接點出該店為何符合需求)。
+
+        【資料】
+        {json.dumps(cafe_info_list, ensure_ascii=False)}
+
+        【輸出規定】
+        1. 理由必須緊扣需求。例如找「深夜 插座」，請寫「營業至深夜，且提供插座適合辦公」。
+        2. 語氣自然，絕對不要出現「整體而言」、「這是一家」等廢言。
+        3. 每家店的理由限制在 25 字以內！
+        4. ⚠️必須回傳單一的 JSON Object (字典) 格式，絕對不要回傳 List (陣列)！格式範例如下：
+        {{
+            "698d8e027c3379e16ae78f76": "營業至深夜，且提供插座適合辦公",
+            "另一個店家ID": "環境安靜且適合讀書"
+        }}
+        """
+        try:
+            response = self.intent_agent.model.generate_content(
+                prompt,
+                generation_config=GenerationConfig(response_mime_type="application/json", temperature=0.2)
+            )
+            clean_text = response.text.replace("```json", "").replace("```", "").strip()
+            parsed_data = json.loads(clean_text)
+            
+            # 🛡️ 終極防呆機制：如果 AI 還是不聽話吐出了 List，手動幫它轉回 Dict
+            if isinstance(parsed_data, list):
+                logger.warning("⚠️ AI 回傳了 List 格式，正在自動修正為 Dict...")
+                fixed_dict = {}
+                for item in parsed_data:
+                    if isinstance(item, dict):
+                        # 情況A: [{"id": "123", "reason": "abc"}]
+                        if "id" in item and "reason" in item:
+                            fixed_dict[item["id"]] = item["reason"]
+                        # 情況B: [{"123": "abc"}, {"456": "def"}]
+                        else:
+                            fixed_dict.update(item)
+                return fixed_dict
+            
+            # 如果本來就是乖乖回傳 Dict，就直接給過
+            elif isinstance(parsed_data, dict):
+                return parsed_data
+            else:
+                return {}
+                
+        except Exception as e:
+            logger.error(f"❌ 批量生成推薦理由失敗: {e}")
+            return {}
 
     async def recommend(self, lat: float, lng: float, user_id: str = None, 
                         user_query: str = None, cafe_tag: str = None,
@@ -108,6 +175,11 @@ class RecommendService:
                     target_datetime = tf.get("target_iso_datetime", target_datetime)
                     logger.info(f"🕒 AI 判定時間條件 -> 現在營業: {filter_open_now}, 指定時間: {target_datetime}")
 
+            # 🌟 [新增] 深夜特權：如果是在找深夜咖啡廳，強制關閉營業時間過濾！
+            is_midnight_search = False
+            if (cafe_tag and "深夜" in cafe_tag) or (search_query and "深夜" in search_query):
+                is_midnight_search = True
+
             # === 3. 決定檢查時間點 ===
             check_time = None
             if target_datetime:
@@ -118,10 +190,15 @@ class RecommendService:
                 except: 
                     check_time = datetime.now()
             else:
-            # 情況 B：沒有指定時間，或是 AI 斷線回傳 {}。一律強制設定為「現在」！
-                check_time = datetime.now()
-                filter_open_now = True  # 順手把狀態切為 True，維持邏輯一致性
-                logger.info(f"🕒 [時間過濾] 未指定時間，預設尋找「現在」有營業的店家: {check_time.strftime('%Y-%m-%d %H:%M')}")
+            # 情況 B：沒有指定時間
+                if is_midnight_search:
+                    logger.info("🌙 [深夜特權] 偵測到「深夜」標籤，強制關閉營業時間檢查！")
+                    check_time = None
+                    filter_open_now = False
+                else:
+                    check_time = datetime.now()
+                    filter_open_now = True  # 順手把狀態切為 True，維持邏輯一致性
+                    logger.info(f"🕒 [時間過濾] 未指定時間，預設尋找「現在」有營業的店家: {check_time.strftime('%Y-%m-%d %H:%M')}")
             
             # 定義內部過濾函式
             def filter_by_opening_hours(candidates):
@@ -187,14 +264,17 @@ class RecommendService:
                             "final_name": "$cafe_info.final_name",
                             "original_name": "$cafe_info.original_name",
                             "location": "$cafe_info.location",
-                            "rating": "$cafe_info.total_ratings",
+                            "rating": "$cafe_info.rating",               # 🌟 修正：正確抓取星星數
+                            "total_ratings": "$cafe_info.total_ratings", # 🌟 新增：正確抓取評論總數
+                            "ratings": "$cafe_info.ratings",             # 🌟 新增：連同巢狀物件一起帶上，買雙重保險
                             "attributes": "$cafe_info.attributes",
                             "ai_tags": "$cafe_info.ai_tags",
                             "tags": "$cafe_info.tags",
                             "vector_score": { "$meta": "vectorSearchScore" },
                             "matched_review": "$content",
                             "opening_hours": "$cafe_info.opening_hours",
-                            "contact": "$cafe_info.contact"
+                            "contact": "$cafe_info.contact",
+                            "summary": "$cafe_info.scores.summary"
                         }}
                     ]
                     
@@ -260,34 +340,44 @@ class RecommendService:
             if not final_data and (cafe_tag or not search_query):
                 target_tag = cafe_tag if cafe_tag else ""
                 logger.info(f"🌍 [Path B] 啟動地理/標籤搜尋 (Tag: {target_tag if target_tag else '無'})")
+                # 🌟 [新增] 將複合標籤拆解成陣列 (例如: "插座,工作友善" -> ["插座", "工作友善"])
+                tag_list = [t.strip() for t in target_tag.split(",")] if target_tag else []
                 
-                pipeline = [
+                def build_path_b_pipeline(tags_to_search):
+                    pipe = [
                     {"$geoNear": {
                         "near": {"type": "Point", "coordinates": [current_search_lng, current_search_lat]},
                         "distanceField": "dist_meters", "maxDistance": 3000, "spherical": True
                     }}
                 ]
                 
-                # 🛡️ [維持原版] 保持黑名單過濾
-                if blacklist_ids:
-                    pipeline.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
+                    # 🛡️ [維持原版] 保持黑名單過濾
+                    if blacklist_ids:
+                        pipe.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
                 
-                if target_tag:
-                    pipeline.append({"$match": {"$or": [
-                                        {"original_name": {"$regex": target_tag, "$options": "i"}},
-                                        {"tags": {"$regex": target_tag, "$options": "i"}}  # 只留最新的神級標籤陣列
-                                    ]}})
+                    if tags_to_search:
+                            # 複合標籤神級應用：使用 $all 確保條件「全部命中」(Hard Filter)
+                            pipe.append({"$match": {"tags": {"$all": tags_to_search}}})
+                    
+                    pipe.append({"$addFields": {
+                        "search_score": {
+                            "$divide": [{"$ifNull": ["$rating", 0]}, {"$add": [{"$divide": ["$dist_meters", 100]}, 1]}]
+                        }
+                    }})
+                    pipe.append({"$sort": {"search_score": -1}})
+                    pipe.append({"$limit": 50})
+                    return pipe
 
-                # 👑 [維持原版] 放棄組員簡陋的 sort，堅持使用這套神級動態距離衰減算分公式！
-                pipeline.append({"$addFields": {
-                    "search_score": {
-                        "$divide": [{"$ifNull": ["$rating", 0]}, {"$add": [{"$divide": ["$dist_meters", 100]}, 1]}]
-                    }
-                }})
-                pipeline.append({"$sort": {"search_score": -1}})
-                pipeline.append({"$limit": 50}) # 維持 50 再去過濾時間
+                path_b_results = list(db['cafes'].aggregate(build_path_b_pipeline(tag_list)))
+                
+                # 🛡️ 情境一：查無結果的優雅降級 (策略 B 放寬標準)
+                if not path_b_results and len(tag_list) > 1:
+                    logger.warning(f"⚠️ [降級機制] 找不到同時符合 {tag_list} 的店，拔除次要條件！")
+                    # 保留第一個核心條件 (剛需)，拔除後面的附屬條件
+                    tag_list = [tag_list[0]] 
+                    logger.info(f"🔄 [降級搜尋] 重新以剛需條件搜尋: {tag_list}")
+                    path_b_results = list(db['cafes'].aggregate(build_path_b_pipeline(tag_list)))
 
-                path_b_results = list(db['cafes'].aggregate(pipeline))
                 open_results = filter_by_opening_hours(path_b_results)
                 final_data = open_results[:10]
 
@@ -320,13 +410,28 @@ class RecommendService:
                 # 6. 使用引入的 TAG_EMOJI_MAP 轉成 Emoji 格式 (若字典沒有該 tag，則保持原文字)
                 return [TAG_EMOJI_MAP.get(t, t) for t in sorted_tags]
             
+            # === 🔥 [新增] 根據使用者需求，讓 AI 動態生成客製化推薦理由 ===
+            target_req = search_query if search_query else cafe_tag
+            personalized_reasons = {}
+            if target_req and final_data:
+                logger.info(f"🧠 [AI 客製化理由] 正在為推薦清單生成專屬理由 (需求: {target_req})...")
+                personalized_reasons = self._generate_reasons_batch(target_req, final_data)
+
             # === 格式化輸出 ===
             formatted_response = []
             for r in final_data:
                 # 🎯 挖掘 MongoDB 中的 ratings Object
                 db_ratings = r.get("ratings", {})
-                rating_val = db_ratings.get("rating", 0.0)
-                review_count = db_ratings.get("review_amount", 0)
+                rating_val = db_ratings.get("rating", r.get("rating", 0.0))
+                review_count = db_ratings.get("review_amount", r.get("total_ratings", 0))
+                place_id_str = str(r.get("place_id", r.get("_id")))
+                
+                # 取得預設的 summary 或 matched_review 作為備援
+                raw_summary = r.get("summary", r.get("scores", {}).get("summary", ""))
+                if not raw_summary: raw_summary = r.get("matched_review", "")
+                
+                # 🌟 取得 AI 客製化生成的理由，如果 AI 失敗或超時，就退回用原來的 summary
+                custom_reason = personalized_reasons.get(place_id_str, raw_summary)
 
                 formatted_response.append({
                     "place_id": r.get("place_id", str(r.get("_id"))),
@@ -340,7 +445,8 @@ class RecommendService:
                     "match_reason": r.get("matched_review", "符合條件"),
                     # 🔥 [組員新增] 將 opening_hours 傳遞給前端 UI 判斷綠色營業中
                     "opening_hours": r.get("opening_hours", {}),
-                    "contact": r.get("contact", {}) 
+                    "contact": r.get("contact", {}) ,
+                    "custom_reason": custom_reason # ✨ 把 AI 寫好的這句話傳給前端
                 })
             return {
                 "data": formatted_response,

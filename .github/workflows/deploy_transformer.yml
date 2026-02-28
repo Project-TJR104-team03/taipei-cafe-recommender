@@ -11,7 +11,7 @@ env:
   PROJECT_ID: project-tjr104-cafe
   REGION: asia-east1
   REPO_NAME: cafe-apps
-  SERVICE_NAME: cafe-store-to-db
+  SERVICE_NAME: cafe-transformer
 
 jobs:
   deploy:
@@ -33,7 +33,6 @@ jobs:
       - name: Build and Push
         run: |
           DOCKER_TAG="asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }}"
-          # 將建置路徑改為 ./1.crawler 這樣 COPY . . 就會抓這個資料夾內的檔案
           docker build -t $DOCKER_TAG ./2.transformer
           docker push $DOCKER_TAG
 
@@ -42,5 +41,6 @@ jobs:
           gcloud run jobs deploy ${{ env.SERVICE_NAME }} \
             --image asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPO_NAME }}/${{ env.SERVICE_NAME }}:${{ github.sha }} \
             --region ${{ env.REGION }} \
-            --task-timeout 3600s \
-            --max-retries 0
+            --task-timeout 86400s \
+            --max-retries 0 \
+            --memory 2Gi \

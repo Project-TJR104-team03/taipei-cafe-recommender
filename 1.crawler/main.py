@@ -22,12 +22,13 @@ try:
         review_dynamic_scraper,  # 對應 review_dynamic_scraper.py
         ifoodie_review_scraper,  # 對應 ifoodie_review_scraper.py
         review_scraper_original, # 對應 review_scraper_original.py
+        official_tag_retry,      # 對應 official_tag_retry.py
         merger                   # 對應 merger.py
     )
 except ImportError as e:
-    logger.error(f" 模組匯入失敗！錯誤訊息: {e}")
-    # 這裡不強制 exit，方便你先測試 main.py 本身邏輯，但執行特定任務會失敗
-
+    # 🌟 修改：直接中止，這樣 Log 會立刻顯示到底缺哪個檔案
+    logger.critical(f"❌ 模組匯入嚴重失敗！訊息: {e}")
+    sys.exit(1)
 
 def main():
     # 1. 定義指令參數 (Arguments)
@@ -35,7 +36,7 @@ def main():
     
     # [必填] 任務名稱
     parser.add_argument("--task", type=str, required=True, 
-                        choices=["scan", "supertaste", "tags", "reviews", "ifoodie", "merge", "reviews_original"],
+                        choices=["scan", "supertaste", "tags", "reviews", "ifoodie", "merge", "reviews_original", "tags_retry"],
                         help="指定要執行的任務階段")
     
     # [選填] 平行處理參數 (預設為 1，即單機模式)
@@ -111,6 +112,11 @@ def main():
         elif args.task == "reviews_original":
             logger.info("呼叫 [Google Reviews Original]...")
             review_scraper_original.run()
+
+        elif args.task == "tags_retry":
+            logger.info(f"呼叫 [Official Tags Retry] (救援補漏模式)...")
+            # 救援模式通常單機跑完全部失敗者，所以只傳 region
+            official_tag_retry.run(region=args.region)
 
         # Phase 3: 合併期
         elif args.task == "merge":
