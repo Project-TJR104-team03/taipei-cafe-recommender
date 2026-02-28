@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, Request, Header, HTTPException
 from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
+from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage, 
     LocationMessage, FlexSendMessage, PostbackEvent,
@@ -466,7 +466,12 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
    else:
         reply_payload.append(TextSendMessage(text="還想找其他的嗎？", quick_reply=get_standard_quick_reply()))
         
-   line_bot_api.reply_message(reply_token, reply_payload)
+   
+   # 🛡️ 加上防護罩：即使 Token 過期或重複，也不會讓伺服器崩潰
+   try:
+       line_bot_api.reply_message(reply_token, reply_payload)
+   except LineBotApiError as e:
+       logger.warning(f"⚠️ 傳送失敗 (Reply Token 已失效或被重複使用): {e.message}")
 
 # --- Handlers ---
 @app.post("/callback")
@@ -478,14 +483,22 @@ async def callback(request: Request, x_line_signature: str = Header(None)):
         raise HTTPException(status_code=400, detail="Invalid signature")
     return 'OK'
 
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text(event):
+    # 🚀 秘訣：收到訊息瞬間，立刻把所有沉重的工作丟給背景執行！
+    # 這樣主程式就能瞬間結束，立刻回傳 200 OK 給 LINE，徹底阻止 LINE 啟動「超時重試」機制
+    asyncio.create_task(background_handle_text(event))
+
+async def background_handle_text(event):
     user_msg = event.message.text
     user_id = event.source.user_id
 
     if user_msg == "重置":
         if user_id in user_sessions: del user_sessions[user_id]
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🔄 對話狀態已重置。", quick_reply=get_standard_quick_reply()))
+        try:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🔄 對話狀態已重置。", quick_reply=get_standard_quick_reply()))
+        except: pass
         return
 
     loc = user_service.get_user_location(user_id)
@@ -509,67 +522,56 @@ def handle_text(event):
             QuickReplyButton(action=PostbackAction(label="不要，下次再看看", data=f"action=confirm_blacklist&id={target_place_id}&ans=no"))
         ])
         
-        line_bot_api.reply_message(
-            event.reply_token, 
-            TextSendMessage(text=f"了解，因為「{user_msg}」。\n\n請問要將這家店加入黑名單（以後不再推薦）嗎？", quick_reply=quick_reply)
-        )
+        try:
+            line_bot_api.reply_message(
+                event.reply_token, 
+                TextSendMessage(text=f"了解，因為「{user_msg}」。\n\n請問要將這家店加入黑名單（以後不再推薦）嗎？", quick_reply=quick_reply)
+            )
+        except: pass
         return
     
     # 一般流程
     is_old_user = user_service.check_user_exists(user_id)
 
     if loc:
+        # 這裡去呼叫 AI 就算花 5 秒，也不會卡住 Webhook 了！
         ai_result = chat_agent.analyze_chat_intent(user_msg)
         mode = ai_result.get("mode", "search")
         
         if mode == "chat":
             reply_text = ai_result.get("reply", "")
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text, quick_reply=get_standard_quick_reply()))
+            try:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text, quick_reply=get_standard_quick_reply()))
+            except: pass
             return
 
         extracted_tags = ai_result.get("tags", [])
         extracted_keyword = ai_result.get("keyword", "")
         search_term = extracted_keyword if extracted_keyword else (extracted_tags[0] if extracted_tags else "熱門")
         
-        # 🔥 [修正]：把 AI 翻譯出來的第一個標準 Tag 抓出來，準備傳給後端！
         primary_tag = extracted_tags[0] if extracted_tags else None
 
         if not is_old_user:
-            user_service.log_action(
-                user_id, "INIT_PREF", "SYSTEM_INIT", 
-                reason=None, user_msg=user_msg, ai_analysis=ai_result, 
-                lat=lat, lng=lng,
-                metadata={
-                    "interaction_type": "text_message",
-                    "ai_mode": ai_result.get("mode"),
-                    "has_location": loc is not None
-                }
-            )
+            user_service.log_action(user_id, "INIT_PREF", "SYSTEM_INIT", reason=None, user_msg=user_msg, ai_analysis=ai_result, lat=lat, lng=lng, metadata={"interaction_type": "text_message", "ai_mode": ai_result.get("mode"), "has_location": loc is not None})
         else:
-            user_service.log_action(
-                user_id, "SEARCH", "SYSTEM_SEARCH", 
-                reason=None, user_msg=user_msg, ai_analysis=ai_result, 
-                lat=lat, lng=lng,
-                metadata={
-                    "interaction_type": "text_message",
-                    "ai_mode": ai_result.get("mode"),
-                    "has_location": loc is not None
-                }
-            )
+            user_service.log_action(user_id, "SEARCH", "SYSTEM_SEARCH", reason=None, user_msg=user_msg, ai_analysis=ai_result, lat=lat, lng=lng, metadata={"interaction_type": "text_message", "ai_mode": ai_result.get("mode"), "has_location": loc is not None})
 
         opening = ai_result.get("opening", "好的，正在幫您搜尋中...")
         closing = ai_result.get("closing", "希望這些店符合您的需求！")
 
-        # 🔥 [修正]：明確加上 tag=primary_tag 參數，把 AI 的翻譯結果交給 Path B！
-        asyncio.create_task(process_recommendation(
+        # ⚡ 因為我們已經在 async 背景任務裡了，直接 await 即可！
+        await process_recommendation(
             event.reply_token, lat, lng, user_id, 
-            tag=primary_tag, # 👈 關鍵修改就在這行
+            tag=primary_tag, 
             user_query=search_term, 
             opening=opening, closing=closing
-        ))
+        )
         return
 
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請先點擊下方按鈕分享位置，我才能幫您找附近的店喔！👇", quick_reply=get_standard_quick_reply()))
+    try:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請先點擊下方按鈕分享位置，我才能幫您找附近的店喔！👇", quick_reply=get_standard_quick_reply()))
+    except: pass
+
 
 @handler.add(MessageEvent, message=LocationMessage)
 def handle_location(event):
