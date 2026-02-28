@@ -7,6 +7,8 @@ from google.cloud import aiplatform_v1
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+import vertexai
+from vertexai.language_models import TextEmbeddingInput, TextEmbeddingModel
 load_dotenv()
 
 # ==========================================
@@ -56,15 +58,42 @@ class BatchJobLauncher:
         }
 
         try:
-            logger.info(f"🔥 [Batch 引擎] 正在發射全量審計任務: {model_path}")
+            logger.info(f"🔥 [Batch 引擎] 正在發射任務 [{TASK_NAME}]: {model_path}")
             logger.info(f"🤖 使用模型: {model_id}")
             logger.info(f"📂 讀取來源: {gcs_input_uri}")
             parent = f"projects/{self.project_id}/locations/{self.location}"
             response = client.create_batch_prediction_job(parent=parent, batch_prediction_job=batch_prediction_job)
             
-            job_id = response.name.split('/')[-1]
+            job_name = response.name
+            job_id = job_name.split('/')[-1]
             logger.info(f"✅ 全量任務提交成功！Job ID: {job_id}")
             logger.info(f"🔗 追蹤連結: https://console.cloud.google.com/vertex-ai/locations/{self.location}/batch-predictions/{job_id}?project={self.project_id}")
+            
+            while True:
+                # 重新抓取任務最新狀態
+                current_job = client.get_batch_prediction_job(name=job_name)
+                state = current_job.state
+
+                # 成功狀態：退出迴圈，讓程式正常結束
+                if state == aiplatform_v1.JobState.JOB_STATE_SUCCEEDED:
+                    logger.info(f"🎉 Vertex AI 任務 {job_id} 成功完成！")
+                    break
+                
+                # 失敗狀態：主動報錯，讓 Airflow 抓到失敗 (Red Light)
+                elif state in [
+                    aiplatform_v1.JobState.JOB_STATE_FAILED, 
+                    aiplatform_v1.JobState.JOB_STATE_CANCELLED, 
+                    aiplatform_v1.JobState.JOB_STATE_EXPIRED
+                ]:
+                    error_detail = current_job.error.message if current_job.error else "未知錯誤"
+                    logger.error(f"❌ Vertex AI 任務失敗 (狀態: {state}): {error_detail}")
+                    raise Exception(f"Vertex AI Job Failed: {error_detail}")
+
+                # 進行中狀態：睡一分鐘再問一次
+                else:
+                    logger.info(f"⏳ 任務處理中 (目前狀態: {state})... 60 秒後再次檢查")
+                    time.sleep(60)
+            
             return response
         except Exception as e:
             logger.error(f"❌ 全量提交失敗: {e}")
@@ -74,58 +103,102 @@ class BatchJobLauncher:
 # 引擎 2：微批次在線發射器 (適用於 Stage B - 1536d)
 # ==========================================
 class OnlineMicroBatchLauncher:
-    def __init__(self, project_id, location):
-        self.client = genai.Client(vertexai=True, project=project_id, location=location)
+    def __init__(self, project_id, location, bucket_name):
+        vertexai.init(project=project_id, location=location)
+        self.storage_client = storage.Client(project=project_id)
+        self.bucket_name = bucket_name
         self.batch_size = 100
+        self.max_retries = 3  # 🌟 設定每批次最大重試次數
+
 
     def submit(self, input_path, output_path, model_id):
-        if not os.path.exists(input_path):
-            logger.error(f"❌ 找不到來源檔案: {input_path}")
-            return
 
-        with open(input_path, 'r', encoding='utf-8') as f:
-            lines = [json.loads(line) for line in f if line.strip()]
+        bucket = self.storage_client.bucket(self.bucket_name)
+        in_blob = bucket.blob(input_path)
+        out_blob = bucket.blob(output_path)
+
+        if not in_blob.exists():
+            error_msg = f"❌ GCS 找不到來源檔案: {input_path}"
+            logger.error(error_msg)
+            raise FileNotFoundError(error_msg)
         
-        total_records = len(lines)
-        logger.info(f"📊 [Online 引擎] 開始處理 {total_records} 筆向量資料...")
+        local_input = f"/tmp/input_{int(time.time())}.jsonl"
+        local_output = f"/tmp/output_{int(time.time())}.jsonl"
+
+        logger.info(f"📥 從 GCS 下載來源檔案至暫存區...")
+        in_blob.download_to_filename(local_input)
+
+        model = TextEmbeddingModel.from_pretrained(model_id)
 
         # 斷點續傳機制
         processed_count = 0
-        if os.path.exists(output_path):
-            with open(output_path, 'r', encoding='utf-8') as f:
+        if out_blob.exists():
+            logger.info(f"📥 發現 GCS 既有進度，下載同步中...")
+            out_blob.download_to_filename(local_output)
+            with open(local_output, 'r', encoding='utf-8') as f:
                 processed_count = sum(1 for _ in f)
-            logger.info(f"♻️ 發現既有進度，從第 {processed_count} 筆開始接續執行...")
+            logger.info(f"♻️ 斷點續傳：將從第 {processed_count} 筆開始接續執行...")
+    
+        total_records = sum(1 for line in open(local_input, 'r', encoding='utf-8') if line.strip())
+        logger.info(f"📊 [Online 引擎] 總共有 {total_records} 筆向量資料待處理...")
 
-        with open(output_path, 'a', encoding='utf-8') as f_out:
-            for i in range(processed_count, total_records, self.batch_size):
-                batch = lines[i : i + self.batch_size]
-                texts = [item["content"] for item in batch]
-                
-                try:
-                    # 🔥 調用 1536 維度
-                    response = self.client.models.embed_content(
-                        model=model_id,
-                        contents=texts,
-                        config=types.EmbedContentConfig(
-                            task_type="RETRIEVAL_DOCUMENT",
-                            output_dimensionality=1536 
-                        )
-                    )
+        with open(local_input, 'r', encoding='utf-8') as f_in, open(local_output, 'a', encoding='utf-8') as f_out:
+            for _ in range(processed_count):
+                next(f_in, None)
 
-                    for j, embedding_obj in enumerate(response.embeddings):
-                        result_record = batch[j]
-                        result_record["embedding_1536"] = embedding_obj.values
-                        f_out.write(json.dumps(result_record, ensure_ascii=False) + '\n')
+            batch = []
+            
+            for i, line in enumerate(f_in, start=processed_count):
+                if not line.strip(): continue
+                batch.append(json.loads(line))
+
+                # 當湊滿 100 筆，或是已經讀到檔案的最後一筆時，開始執行 AI 任務
+                if len(batch) == self.batch_size or (i + 1) == total_records:
+                    texts = [item["content"] for item in batch]
                     
-                    logger.info(f"✅ 進度: {min(i + self.batch_size, total_records)} / {total_records}")
-                    time.sleep(1) # 速率控制
+                    success = False
+                    for attempt in range(self.max_retries):
+                        try:
+                            inputs = [TextEmbeddingInput(text=t, task_type="RETRIEVAL_DOCUMENT") for t in texts]
+                            embeddings = model.get_embeddings(
+                            inputs,
+                            output_dimensionality=1536,
+                            )
+                        
+                            for j, embedding in enumerate(embeddings):
+                                result_record = batch[j]
+                                result_record["embedding_1536"] = embedding.values
+                                f_out.write(json.dumps(result_record, ensure_ascii=False) + '\n')
+                        
+                            f_out.flush()
+                            logger.info(f"✅ 進度: {i + 1} / {total_records}")
 
-                except Exception as e:
-                    logger.error(f"❌ 批次 {i} 到 {i+self.batch_size} 發生錯誤: {e}")
-                    logger.info("暫停 10 秒後重試...")
-                    time.sleep(10)
+                       
+                            if (i + 1) % 500 == 0 or (i + 1) >= total_records:
+                                logger.info(f"☁️ 正在將進度同步備份至 GCS...")
+                                out_blob.upload_from_filename(local_output)
+
+                            time.sleep(1) # 速率控制
+                            success = True
+                            break # 本批次成功，跳出重試迴圈
+
+                        except Exception as e:
+                            logger.warning(f"⚠️ 批次 {i} 到 {i+len(batch)} 發生錯誤 (第 {attempt+1}/{self.max_retries} 次): {e}")
+                            time.sleep(10 * (attempt + 1)) # 遞增等待時間 (10s, 20s, 30s)
+            
+             # 🌟 修正 3：如果重試 3 次都失敗，強制中斷任務，讓 Airflow 亮紅燈
+                    if not success:
+                        fatal_msg = f"❌ 批次 {i} 處理失敗已達上限，終止任務以保護資料完整性！"
+                        logger.error(fatal_msg)
+                        if os.path.exists(local_output):
+                            out_blob.upload_from_filename(local_output)
+                        raise Exception(fatal_msg)
+            
+                    batch = []
 
         logger.info(f"🎉 1536d 向量全部處理完成！已輸出至: {output_path}")
+        if os.path.exists(local_input): os.remove(local_input)
+        if os.path.exists(local_output): os.remove(local_output)
 
 # ==========================================
 # [總司令部] 任務路由控制中心
@@ -134,13 +207,14 @@ if __name__ == "__main__":
     # ==========================
     # 🎯 策略切換開關
     # ==========================
-    TARGET_TASK = "AUDIT" # 切換 "STAGE_A" 或 "STAGE_B"
+    TARGET_TASK = os.getenv("TARGET_TASK", None)
+    logger.info(f"🚀 接收到 Router 任務指示: TARGET_TASK={TARGET_TASK}")
 
     if TARGET_TASK == "AUDIT":
         SOURCE_FILE = os.getenv("GCS_STAGE_A_JSONL_PATH", "transform/stageA/vertex_job_stage_a.jsonl")
         TASK_NAME = "stage_a_full_audit"
         MODEL_ID = "gemini-2.0-flash-001" 
-        
+       
         # 啟動 Batch 引擎
         launcher = BatchJobLauncher(PROJECT_ID, LOCATION, BUCKET_NAME)
         launcher.submit(SOURCE_FILE, TASK_NAME, MODEL_ID)
@@ -148,10 +222,11 @@ if __name__ == "__main__":
     elif TARGET_TASK == "EMBEDDING":
         SOURCE_FILE = os.getenv("GCS_STAGE_C_EMBEDDING_JSONL_PATH", "transform/stageC/vertex_job_stage_c_embedding.jsonl")
         TASK_NAME = "embedding_generation"
-        MODEL_ID = "gemini-embedding-001" 
-        
-        launcher = BatchJobLauncher(PROJECT_ID, LOCATION, BUCKET_NAME)
-        launcher.submit(SOURCE_FILE, TASK_NAME, MODEL_ID)
+        MODEL_ID = "gemini-embedding-001"
+        OUTPUT_FILE = os.getenv("GCS_EMBEDDING_RESULTS_OUTPUT", "batch_output/embedding_generation/final_1536_vectors_for_mongo.jsonl")
+
+        launcher = OnlineMicroBatchLauncher(PROJECT_ID, LOCATION, BUCKET_NAME)
+        launcher.submit(SOURCE_FILE, OUTPUT_FILE, MODEL_ID)
 
     else:
         logger.error("❌ 未知的任務類型設定")
