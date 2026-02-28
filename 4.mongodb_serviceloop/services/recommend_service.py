@@ -175,6 +175,11 @@ class RecommendService:
                     target_datetime = tf.get("target_iso_datetime", target_datetime)
                     logger.info(f"🕒 AI 判定時間條件 -> 現在營業: {filter_open_now}, 指定時間: {target_datetime}")
 
+            # 🌟 [新增] 深夜特權：如果是在找深夜咖啡廳，強制關閉營業時間過濾！
+            is_midnight_search = False
+            if (cafe_tag and "深夜" in cafe_tag) or (search_query and "深夜" in search_query):
+                is_midnight_search = True
+
             # === 3. 決定檢查時間點 ===
             check_time = None
             if target_datetime:
@@ -185,10 +190,15 @@ class RecommendService:
                 except: 
                     check_time = datetime.now()
             else:
-            # 情況 B：沒有指定時間，或是 AI 斷線回傳 {}。一律強制設定為「現在」！
-                check_time = datetime.now()
-                filter_open_now = True  # 順手把狀態切為 True，維持邏輯一致性
-                logger.info(f"🕒 [時間過濾] 未指定時間，預設尋找「現在」有營業的店家: {check_time.strftime('%Y-%m-%d %H:%M')}")
+            # 情況 B：沒有指定時間
+                if is_midnight_search:
+                    logger.info("🌙 [深夜特權] 偵測到「深夜」標籤，強制關閉營業時間檢查！")
+                    check_time = None
+                    filter_open_now = False
+                else:
+                    check_time = datetime.now()
+                    filter_open_now = True  # 順手把狀態切為 True，維持邏輯一致性
+                    logger.info(f"🕒 [時間過濾] 未指定時間，預設尋找「現在」有營業的店家: {check_time.strftime('%Y-%m-%d %H:%M')}")
             
             # 定義內部過濾函式
             def filter_by_opening_hours(candidates):
@@ -254,7 +264,9 @@ class RecommendService:
                             "final_name": "$cafe_info.final_name",
                             "original_name": "$cafe_info.original_name",
                             "location": "$cafe_info.location",
-                            "rating": "$cafe_info.total_ratings",
+                            "rating": "$cafe_info.rating",               # 🌟 修正：正確抓取星星數
+                            "total_ratings": "$cafe_info.total_ratings", # 🌟 新增：正確抓取評論總數
+                            "ratings": "$cafe_info.ratings",             # 🌟 新增：連同巢狀物件一起帶上，買雙重保險
                             "attributes": "$cafe_info.attributes",
                             "ai_tags": "$cafe_info.ai_tags",
                             "tags": "$cafe_info.tags",
@@ -328,34 +340,44 @@ class RecommendService:
             if not final_data and (cafe_tag or not search_query):
                 target_tag = cafe_tag if cafe_tag else ""
                 logger.info(f"🌍 [Path B] 啟動地理/標籤搜尋 (Tag: {target_tag if target_tag else '無'})")
+                # 🌟 [新增] 將複合標籤拆解成陣列 (例如: "插座,工作友善" -> ["插座", "工作友善"])
+                tag_list = [t.strip() for t in target_tag.split(",")] if target_tag else []
                 
-                pipeline = [
+                def build_path_b_pipeline(tags_to_search):
+                    pipe = [
                     {"$geoNear": {
                         "near": {"type": "Point", "coordinates": [current_search_lng, current_search_lat]},
                         "distanceField": "dist_meters", "maxDistance": 3000, "spherical": True
                     }}
                 ]
                 
-                # 🛡️ [維持原版] 保持黑名單過濾
-                if blacklist_ids:
-                    pipeline.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
+                    # 🛡️ [維持原版] 保持黑名單過濾
+                    if blacklist_ids:
+                        pipe.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
                 
-                if target_tag:
-                    pipeline.append({"$match": {"$or": [
-                                        {"original_name": {"$regex": target_tag, "$options": "i"}},
-                                        {"tags": {"$regex": target_tag, "$options": "i"}}  # 只留最新的神級標籤陣列
-                                    ]}})
+                    if tags_to_search:
+                            # 複合標籤神級應用：使用 $all 確保條件「全部命中」(Hard Filter)
+                            pipe.append({"$match": {"tags": {"$all": tags_to_search}}})
+                    
+                    pipe.append({"$addFields": {
+                        "search_score": {
+                            "$divide": [{"$ifNull": ["$rating", 0]}, {"$add": [{"$divide": ["$dist_meters", 100]}, 1]}]
+                        }
+                    }})
+                    pipe.append({"$sort": {"search_score": -1}})
+                    pipe.append({"$limit": 50})
+                    return pipe
 
-                # 👑 [維持原版] 放棄組員簡陋的 sort，堅持使用這套神級動態距離衰減算分公式！
-                pipeline.append({"$addFields": {
-                    "search_score": {
-                        "$divide": [{"$ifNull": ["$rating", 0]}, {"$add": [{"$divide": ["$dist_meters", 100]}, 1]}]
-                    }
-                }})
-                pipeline.append({"$sort": {"search_score": -1}})
-                pipeline.append({"$limit": 50}) # 維持 50 再去過濾時間
+                path_b_results = list(db['cafes'].aggregate(build_path_b_pipeline(tag_list)))
+                
+                # 🛡️ 情境一：查無結果的優雅降級 (策略 B 放寬標準)
+                if not path_b_results and len(tag_list) > 1:
+                    logger.warning(f"⚠️ [降級機制] 找不到同時符合 {tag_list} 的店，拔除次要條件！")
+                    # 保留第一個核心條件 (剛需)，拔除後面的附屬條件
+                    tag_list = [tag_list[0]] 
+                    logger.info(f"🔄 [降級搜尋] 重新以剛需條件搜尋: {tag_list}")
+                    path_b_results = list(db['cafes'].aggregate(build_path_b_pipeline(tag_list)))
 
-                path_b_results = list(db['cafes'].aggregate(pipeline))
                 open_results = filter_by_opening_hours(path_b_results)
                 final_data = open_results[:10]
 
@@ -400,8 +422,8 @@ class RecommendService:
             for r in final_data:
                 # 🎯 挖掘 MongoDB 中的 ratings Object
                 db_ratings = r.get("ratings", {})
-                rating_val = db_ratings.get("rating", 0.0)
-                review_count = db_ratings.get("review_amount", 0)
+                rating_val = db_ratings.get("rating", r.get("rating", 0.0))
+                review_count = db_ratings.get("review_amount", r.get("total_ratings", 0))
                 place_id_str = str(r.get("place_id", r.get("_id")))
                 
                 # 取得預設的 summary 或 matched_review 作為備援
