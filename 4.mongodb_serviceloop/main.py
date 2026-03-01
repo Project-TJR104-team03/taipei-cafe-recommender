@@ -104,6 +104,7 @@ def get_button_reaction(tag):
     ]
     return random.choice(openings), random.choice(closings)
 
+# ✨ [完美整合版] 推薦理由濾水器與斷句系統
 def clean_summary_text(text):
     if not text: return ""
     # 1. 切割「整體而言，」只取後面的重點
@@ -113,13 +114,25 @@ def clean_summary_text(text):
     # 2. 自動過濾掉前方的「店名是一家」、「店名的」等冗長主詞 (容許範圍15字內)
     core = re.sub(r"^[^，。]{1,15}?(是一家|是|的)", "", core)
     
-    # 3. 移除結尾多餘的符號
+    # 3. 強制過濾掉括號註解 (例如：(此店較著重咖啡...))
+    core = re.sub(r"\(.*?\)|（.*?）", "", core)
+    
+    # 4. 移除結尾多餘符號
     core = core.strip(" 。-")
     
-    # 4. 限制字數，確保排版簡潔 (超過 35 字加上刪節號)
-    if len(core) > 35:
-        core = core[:33] + "..."
+    # 5. 智能斷句系統 (保證不出現 ... 且完整顯示)
+    # LINE 卡片兩行極限大約是 25~28 字。我們把防線設在 26 字。
+    if len(core) > 26:
+        # 如果超過，我們在句子前 26 個字裡面，尋找「最後一個出現的逗號或頓號」
+        last_comma = max(core.rfind("，", 0, 26), core.rfind("、", 0, 26))
         
+        # 如果有找到合適的逗號 (例如在第 15 字)，就在逗號處完美收尾！
+        if last_comma > 10: 
+            core = core[:last_comma]
+        else:
+            # 萬一 AI 寫了超過 26 個字完全沒有逗號，就只能保留前 24 字避免撐破卡片
+            core = core[:24] 
+            
     return core
 
 # --- ⭐ 星星評分組件產生器 ---
