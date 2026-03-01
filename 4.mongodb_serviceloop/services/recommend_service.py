@@ -1,6 +1,7 @@
 # app/services/recommend_service.py
 import logging
 import traceback
+import asyncio
 from datetime import datetime
 from geopy.distance import geodesic
 from typing import Any, Dict, List, Optional
@@ -153,10 +154,24 @@ class RecommendService:
                     else:
                         logger.info(f"📍 [地點切換] 鎖定地點 -> ({avg_lat}, {avg_lng})")
 
-            # 處理剩餘字串：如果地名拿掉後只剩空字串或無意義符號，視為 None
-            # 這樣就會自動走 Path B (找附近的店)
-            if not search_query or len(search_query) < 2: 
-                search_query = None
+            # 🔥 [修正] 處理剩餘字串：濾除無意義贅字，判斷是否還有實質搜尋價值
+            if search_query:
+                # 1. 定義常見的無意義贅字 (可依據使用者習慣自由擴充)
+                stop_words = [
+                    "附近", "推薦", "有沒有", "有", "的", "咖啡廳", "咖啡店", 
+                    "店", "幫我找", "在哪", "哪裡", "一下", "我想去", "我想找", "台北"
+                ]
+                
+                # 2. 建立一個測試用字串，把贅字全部拔掉
+                test_query = search_query
+                for word in stop_words:
+                    test_query = test_query.replace(word, "")
+                test_query = test_query.strip()
+                
+                # 3. 如果拿掉地名和贅字後，剩下的字是空的或太短 (例如只剩標點符號)，就放棄語意搜尋
+                if not test_query or len(test_query) < 2: 
+                    logger.info(f"🧹 [字串清理] 扣除地名後剩餘 '{search_query}' 缺乏明確特徵，跳過 AI，直接交給 Path B (純地理搜尋)")
+                    search_query = None
 
             user_loc = (current_search_lat, current_search_lng)
 
@@ -240,56 +255,129 @@ class RecommendService:
                 logger.info(f"🛡️ 觸發劇本二：提取拒絕店家的隱性特徵 -> {rejected_tags}")
 
             final_data = []
+            
 
             # === Path A: 向量搜尋 ===
             # 🔥 [組員新增邏輯] 只有在清洗後的 search_query 有值時才跑向量
+            # === Path A: 向量搜尋 (雙引擎並行架構) ===
             if search_query:
-                logger.info(f"🔍 [Path A] 啟動向量搜尋: 關鍵字 '{search_query}'")
+                logger.info(f"🔍 [Path A] 啟動雙引擎向量搜尋: 關鍵字 '{search_query}'")
                 query_vector = self.get_embedding(search_query)
                 
                 if query_vector:
                     logger.info(f"✅ [AI 語意分析成功] 向量維度: {len(query_vector)}")
 
-                    pipeline_vec = [
+                    # 1. 定義引擎 A: 搜尋店家總結 (Macro - cafés collection)
+                    pipeline_macro = [
                         {"$vectorSearch": {
-                            "index": "vector_index", "path": "embedding", "queryVector": query_vector,
-                            "numCandidates": 100, "limit": 50
+                            "index": "vector_index", "path": "vector", "queryVector": query_vector,
+                            "numCandidates": 100, "limit": 30 # 稍微提高 limit 以增加交集機率
                         }},
-                        {"$lookup": {
-                            "from": "cafes", "localField": "place_id", "foreignField": "place_id", "as": "cafe_info"
-                        }},
-                        {"$unwind": "$cafe_info"},
                         {"$project": {
-                            "place_id": "$cafe_info.place_id",
-                            "final_name": "$cafe_info.final_name",
-                            "original_name": "$cafe_info.original_name",
-                            "location": "$cafe_info.location",
-                            "rating": "$cafe_info.rating",               # 🌟 修正：正確抓取星星數
-                            "total_ratings": "$cafe_info.total_ratings", # 🌟 新增：正確抓取評論總數
-                            "ratings": "$cafe_info.ratings",             # 🌟 新增：連同巢狀物件一起帶上，買雙重保險
-                            "attributes": "$cafe_info.attributes",
-                            "ai_tags": "$cafe_info.ai_tags",
-                            "tags": "$cafe_info.tags",
-                            "vector_score": { "$meta": "vectorSearchScore" },
-                            "matched_review": "$content",
-                            "opening_hours": "$cafe_info.opening_hours",
-                            "contact": "$cafe_info.contact",
-                            "summary": "$cafe_info.scores.summary"
+                            "place_id": 1,
+                            "macro_score": { "$meta": "vectorSearchScore" },
+                            "summary": "$scores.summary"
                         }}
                     ]
-                    
-                    if blacklist_ids:
-                        pipeline_vec.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
 
-                    raw_results = list(db['reviews'].aggregate(pipeline_vec))
-                    logger.info(f"📦 [漏斗監控] 向量搜尋 & lookup 完，初始筆數: {len(raw_results)}")
+                    # 2. 定義引擎 B: 搜尋精選評論 (Micro - reviews collection)
+                    pipeline_micro = [
+                        {"$vectorSearch": {
+                            "index": "vector_index", "path": "embedding", "queryVector": query_vector,
+                            "numCandidates": 100, "limit": 30
+                        }},
+                        {"$project": {
+                            "place_id": 1,
+                            "micro_score": { "$meta": "vectorSearchScore" },
+                            "matched_review": "$content"
+                        }}
+                    ]
+
+                    # 如果有黑名單，在兩個引擎都加上過濾條件
+                    if blacklist_ids:
+                        pipeline_macro.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
+                        pipeline_micro.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
+
+                    # 3. 🔥 非同步平行觸發兩個資料庫查詢 (節省一半等待時間！)
+                    async def fetch_macro():
+                        return list(db['cafes'].aggregate(pipeline_macro))
+                        
+                    async def fetch_micro():
+                        return list(db['reviews'].aggregate(pipeline_micro))
+
+                    logger.info("⚡ 啟動平行檢索 (Macro + Micro)...")
+                    macro_results, micro_results = await asyncio.gather(fetch_macro(), fetch_micro())
+                    logger.info(f"📦 檢索完成: 總結命中 {len(macro_results)} 筆, 評論命中 {len(micro_results)} 筆")
+
+                    # 4. 權重融合 (Ensemble Scoring)
+                    fusion_dict = {}
                     
+                    # 處理引擎 A 結果 (權重 0.4)
+                    for doc in macro_results:
+                        pid = doc["place_id"]
+                        fusion_dict[pid] = {
+                            "place_id": pid,
+                            "macro_score": doc["macro_score"],
+                            "micro_score": 0.0, # 預設值
+                            "summary": doc.get("summary", ""),
+                            "matched_review": ""
+                        }
+                    
+                    # 處理引擎 B 結果 (權重 0.6，因為細節通常是痛點)
+                    for doc in micro_results:
+                        pid = doc["place_id"]
+                        if pid not in fusion_dict:
+                            fusion_dict[pid] = {
+                                "place_id": pid,
+                                "macro_score": 0.0,
+                                "micro_score": doc["micro_score"],
+                                "summary": "",
+                                "matched_review": doc.get("matched_review", "")
+                            }
+                        else:
+                            # 如果兩邊都命中，取最高分的評論
+                            if doc["micro_score"] > fusion_dict[pid]["micro_score"]:
+                                fusion_dict[pid]["micro_score"] = doc["micro_score"]
+                                fusion_dict[pid]["matched_review"] = doc.get("matched_review", "")
+
+                    # 5. 計算融合語意分數，並抓取完整店家資訊 ($lookup)
+                    fused_place_ids = list(fusion_dict.keys())
+                    
+                    # 用一個大查詢把所有候選店家的詳細資料撈回來
+                    raw_cafes = list(db['cafes'].find({"place_id": {"$in": fused_place_ids}}))
+                    
+                    raw_results = []
+                    for cafe_info in raw_cafes:
+                        pid = cafe_info["place_id"]
+                        fusion_data = fusion_dict[pid]
+                        
+                        # 👑 雙引擎分數融合公式
+                        final_vec_score = (fusion_data["macro_score"] * 0.4) + (fusion_data["micro_score"] * 0.6)
+                        
+                        # 把資料組裝成原本後端演算法需要的格式
+                        raw_results.append({
+                            "place_id": pid,
+                            "final_name": cafe_info.get("final_name", ""),
+                            "original_name": cafe_info.get("original_name", ""),
+                            "location": cafe_info.get("location", {}),
+                            "rating": cafe_info.get("rating", 0.0),
+                            "total_ratings": cafe_info.get("total_ratings", 0),
+                            "ratings": cafe_info.get("ratings", {}),
+                            "attributes": cafe_info.get("attributes", {}),
+                            "ai_tags": cafe_info.get("ai_tags", []),
+                            "tags": cafe_info.get("tags", []),
+                            "opening_hours": cafe_info.get("opening_hours", {}),
+                            "contact": cafe_info.get("contact", {}),
+                            
+                            # 帶入融合計算後的數值
+                            "vector_score": final_vec_score,
+                            "summary": fusion_data["summary"] if fusion_data["summary"] else cafe_info.get("scores", {}).get("summary", ""),
+                            "matched_review": fusion_data["matched_review"]
+                        })
+
+                    # === 接續原本的時間與距離過濾邏輯 ===
                     raw_results = filter_by_opening_hours(raw_results)
                     logger.info(f"⏳ [漏斗監控] 時間過濾後，剩餘筆數: {len(raw_results)}")
-
-# ////////////////////////////////
-# notion分隔
-# ////////////////////////////////
 
                     filtered_results = []
                     for item in raw_results:
@@ -297,7 +385,7 @@ class RecommendService:
                         c_loc = (item['location']['coordinates'][1], item['location']['coordinates'][0])
                         dist_meters = geodesic(user_loc, c_loc).meters
                         
-                        logger.info(f"📏 店名: {item.get('final_name')} | 距離: {int(dist_meters)}m")
+                        logger.info(f"📏 店名: {item.get('final_name')} | 綜合語意分數: {item['vector_score']:.3f} | 距離: {int(dist_meters)}m")
 
                         if dist_meters <= 3000:
                             item['dist_meters'] = int(dist_meters)
@@ -306,34 +394,28 @@ class RecommendService:
                             has_disliked_features = False
                             if rejected_tags:
                                 item_tags = [t['tag'] for t in item.get('ai_tags', [])]
-                                # 如果這家店的標籤跟被拒絕的店有交集，觸發打 8 折懲罰
                                 if set(rejected_tags) & set(item_tags):
                                     has_disliked_features = True
+                                    
                             # 🌟 呼叫你的 8 維度大腦！
                             item['search_score'] = calculate_comprehensive_score(
                                 vec_score=item.get('vector_score', 0.8),
                                 rating=item.get('rating', 0) or 0,
                                 total_reviews=item.get('total_ratings', 0),
                                 dist_meters=dist_meters,
-                                dist_to_nearest_mrt=500.0, # (先給預設值，後續階段四再補齊 DB 欄位)
+                                dist_to_nearest_mrt=500.0, 
                                 hours_until_close=hours_until_close,
                                 clicks=clicks, keeps=keeps, dislikes=dislikes,
-                                is_new_user=False, # (可透過 user_service 判斷)
+                                is_new_user=False, 
                                 has_disliked_features=has_disliked_features
                             )
                             filtered_results.append(item)
-                        
                         else:
                             logger.info(f"   ❌ 太遠被移除 (>3000m)")
                     
                     logger.info(f"📏 [漏斗監控] 距離 (3000m) 過濾後，最終筆數: {len(filtered_results)}")
                     filtered_results.sort(key=lambda x: x['search_score'], reverse=True)
-                    final_data = filtered_results[:10]
-
-                # 🔥 [組員新增] 安全網：如果 Path A 摃龜，強制降級跑 Path B
-                if not final_data:
-                    logger.info("⚠️ Path A 查無結果，自動降級為 Path B (避免空白)")
-                    search_query = None 
+                    final_data = filtered_results[:10] 
 
             # === Path B: Tag/Geo 搜尋 ===
             # 🔥 [邏輯融合] 結合組員的 search_query 判斷 與 我們的高級 Pipeline
