@@ -10,9 +10,10 @@ from database import db_client
 from utils import is_google_period_open
 from locations import ALL_LOCATIONS
 from agents.intent_agent import IntentAgent
+from agents.reason_agent import ReasonAgent
 from google import genai 
 from services.scoring import process_and_score_cafes
-from constants import TAG_EMOJI_MAP
+
 
 
 logger = logging.getLogger("Coffee_Recommender")
@@ -20,6 +21,7 @@ logger = logging.getLogger("Coffee_Recommender")
 class RecommendService:
     def __init__(self, api_key: str):
         self.intent_agent = IntentAgent()
+        self.reason_agent = ReasonAgent()
         if api_key:
             self.client = genai.Client(api_key=api_key)
         else:
@@ -46,89 +48,12 @@ class RecommendService:
         except Exception as e:
             logger.error(f"❌ Embedding Error: {e}")
             return None
-        
-    # ✨ [完美整合版]：優先抓取 matched_review 網友評論，並包含 15-20 字數限制與格式防呆
-    def _generate_reasons_batch(self, user_query: str, cafes: list) -> dict:
-        """根據使用者需求，一次性請 AI 從各家店的 review / summary 中萃取「一句話推薦理由」"""
-        if not user_query or not self.intent_agent.model:
-            return {}
-        
-        cafe_info_list = []
-        for c in cafes:
-            # 優先抓取 Path A 找出來的超神準「網友評論 (matched_review)」
-            info = c.get("matched_review", "") 
-            
-            # 如果是 Path B 找出來的店，沒有 matched_review，才退而求其次用 summary
-            if not info:
-                info = c.get("summary", c.get("scores", {}).get("summary", ""))
-            
-            # 一樣把標籤抓出來給 AI 當作保底的發揮素材
-            tags = c.get("tags", [])
-            if not tags and "ai_tags" in c:
-                tags = [t.get("tag", "") for t in c.get("ai_tags", []) if isinstance(t, dict)]
-            
-            cafe_info_list.append({
-                "id": str(c.get("place_id", c.get("_id"))),
-                "tags": tags[:5], 
-                "info": info[:250] # 評論可能稍微長一點，放寬到 250 字
-            })
-            
-        prompt = f"""
-        【任務】
-        你是一位熱情且專業的咖啡廳推薦專家。
-        使用者目前的搜尋需求為：「{user_query}」
-        名單上的咖啡廳「已經確定符合」此需求。請根據資料中的 tags 與 info (可能為網友真實評論或店家介紹)，為每家店寫出「一句話的專屬正面推薦理由」。
-
-        【資料】
-        {json.dumps(cafe_info_list, ensure_ascii=False)}
-
-        【輸出規定】
-        1. 必須是「正面、肯定」的推銷語氣。如果 info 是網友評論，請將其修飾為推薦口吻 (例如：可以寫「網友大推這裡的甜點...」或直接描述優點)。如果 info 沒提到需求，請利用 tags 造句。
-        2. ⚠️ 絕對禁止出現「資訊較少」、「未提及」、「無相關資訊」、「偏重咖啡」等任何帶有否定、抱歉或不確定的字眼！
-        3. 語氣自然，絕對不要出現「整體而言」、「這是一家」等廢言。
-        4. ⚠️ 字數嚴格限制在 15 到 20 字以內！必須是一句「完整結束」的精華短句，不要使用括號 () 備註。
-        5. ⚠️ 必須回傳單一的 JSON Object (字典) 格式，絕對不要回傳 List (陣列)！格式範例如下：
-        {{
-            "698d8e027c3379e16ae78f76": "營業至深夜，且提供插座適合辦公",
-            "另一個店家ID": "如同網友推薦，這裡提供多樣美味甜點"
-        }}
-        """
-        try:
-            response = self.intent_agent.model.generate_content(
-                prompt,
-                generation_config=GenerationConfig(response_mime_type="application/json", temperature=0.2)
-            )
-            clean_text = response.text.replace("```json", "").replace("```", "").strip()
-            parsed_data = json.loads(clean_text)
-            
-            # 🛡️ 防呆機制保留，避免 AI 壞掉
-            if isinstance(parsed_data, list):
-                logger.warning("⚠️ AI 回傳了 List 格式，正在自動修正為 Dict...")
-                fixed_dict = {}
-                for item in parsed_data:
-                    if isinstance(item, dict):
-                        # 情況A: [{"id": "123", "reason": "abc"}]
-                        if "id" in item and "reason" in item:
-                            fixed_dict[item["id"]] = item["reason"]
-                        # 情況B: [{"123": "abc"}, {"456": "def"}]
-                        else:
-                            fixed_dict.update(item)
-                return fixed_dict
-            
-            # 如果本來就是乖乖回傳 Dict，就直接給過
-            elif isinstance(parsed_data, dict):
-                return parsed_data
-            else:
-                return {}
-                
-        except Exception as e:
-            logger.error(f"❌ 批量生成推薦理由失敗: {e}")
-            return {}
     
     async def recommend(self, lat: float, lng: float, user_id: str = None, 
                         user_query: str = None, cafe_tag: str = None,
                         rejected_place_id: str = None,  # 🌟 新增：使用者剛剛拒絕的店家 ID
-                        negative_reason: str = None     # 🌟 新增：使用者拒絕的原因
+                        negative_reason: str = None,     # 🌟 新增：使用者拒絕的原因
+                        theme: str = None
                         ) -> Dict[str, Any]:
         try:
             db = db_client.get_db()
@@ -194,7 +119,7 @@ class RecommendService:
             
             if user_query: # 注意：這裡依然傳入完整的 user_query 給 AI，讓 AI 知道完整情境
                 ai_intent = self.intent_agent.analyze_user_intent(user_query)
-                logger.info(f"🧠 AI 意圖分析結果: {ai_intent}")
+                # logger.info(f"🧠 AI 意圖分析結果: {ai_intent}")
                 
                 if ai_intent and "time_filter" in ai_intent:
                     tf = ai_intent["time_filter"]
@@ -268,9 +193,35 @@ class RecommendService:
 
             final_candidates = [] # 🌟 所有路徑找出來的候選名單，通通丟進這裡，先不算分！
 
+            # === 🔥 [新增] Path C: 情境高速公路 (分數優先) ===
+            final_data = [] # 用來裝最後排好序的店家
+            
+            if theme:
+                logger.info(f"🚀 [Path C] 啟動情境直達車: {theme}")
+                score_field = f"score_{theme}"
+                
+                pipeline_c = [
+                    {"$geoNear": {
+                        "near": {"type": "Point", "coordinates": [current_search_lng, current_search_lat]},
+                        "distanceField": "dist_meters", "maxDistance": 3000, "spherical": True
+                    }},
+                    {"$match": {score_field: {"$gt": 0.4}}}
+                ]
+                if blacklist_ids: 
+                    pipeline_c.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
+                
+                pipeline_c.append({"$sort": {score_field: -1}})
+                pipeline_c.append({"$limit": 30}) 
+                
+                path_c_results = list(db['cafes'].aggregate(pipeline_c))
+                open_results = filter_by_opening_hours(path_c_results)
+                
+                final_data = open_results[:10]
+                logger.info(f"🏆 情境直達車篩選完成，選出 {len(final_data)} 家神店。")
+
             # === Path 0: 店名精準直達車 ===
-            if search_query:
-                import re # 確保引入正則表達式模組
+            if search_query and not theme: # 🛡️ 防護罩 1：情境搜尋直接跳過
+                import re 
                 
                 search_names = [search_query]
                 
@@ -278,29 +229,25 @@ class RecommendService:
                 if ai_intent and ai_intent.get("extracted_keywords"):
                     extracted = ai_intent["extracted_keywords"]
                     reconstructed = " ".join(extracted)
-                    
-                    # 判斷：如果 AI 切出來的詞，組裝起來剛好是原句的一部分 (例如 always day one)
-                    # 代表 AI 只是把英文切碎了，我們不要把碎片加進去，只保留組裝好的完整字串！
                     if len(extracted) > 1 and reconstructed.lower() in search_query.lower():
                         search_names.append(reconstructed)
                     else:
-                        # 如果不是 (例如：["星巴克", "路易莎"])，代表是多個獨立店名，全部加進去
                         search_names.extend(extracted)
                 
-                # 去除重複的搜尋詞
                 search_names = list(set(search_names))
-                logger.info(f"🔎 [Path 0] 準備比對這些可能店名: {search_names}")
+                
+                # 🛡️ [神級防呆 3：氾濫單字黑名單]
+                forbidden_exact_words = {"cafe", "coffee", "咖啡", "咖啡廳", "咖啡店", "店名", "餐廳", "推薦", "附近", "台北"}
+                logger.info(f"🔎 [Path 0] 準備比提這些可能店名: {search_names}")
                 
                 # 🌟 [神級進化 2：模糊比對正則魔法]
                 name_or_conditions = []
                 for n in search_names:
                     clean_n = n.strip()
-                    if len(clean_n) >= 2: # 防呆：避免拿單一個字去亂找全資料庫
-                        # A. 原始精準比對
+                    if len(clean_n) >= 2 and clean_n.lower() not in forbidden_exact_words: 
                         name_or_conditions.append({"final_name": {"$regex": f"^{clean_n}$", "$options": "i"}})
                         name_or_conditions.append({"original_name": {"$regex": f"^{clean_n}$", "$options": "i"}})
                         
-                        # B. 模糊容錯比對 (把空白和符號都變成 .* 來忽略它們)
                         fuzzy_pattern = ".*".join(re.split(r'[\s\-]+', clean_n))
                         name_or_conditions.append({"final_name": {"$regex": fuzzy_pattern, "$options": "i"}})
                         name_or_conditions.append({"original_name": {"$regex": fuzzy_pattern, "$options": "i"}})
@@ -317,7 +264,6 @@ class RecommendService:
                     name_pipeline.append({"$limit": 5})
                     
                     name_results = list(db['cafes'].aggregate(name_pipeline))
-                    # 🛡️ 絕對豁免權：精準搜店名時，就算現在沒開也要顯示！(拿掉時間過濾)
                     
                     if name_results:
                         logger.info(f"🎯 [Path 0] 精準命中店家: {len(name_results)} 家")
@@ -326,7 +272,7 @@ class RecommendService:
                         final_candidates = name_results
 
             # === Path A: 向量搜尋 (雙引擎並行架構) ===
-            if search_query and not final_candidates:
+            if search_query and not final_candidates and not theme: # 🛡️ 防護罩 2
                 logger.info(f"🔍 [Path A] 啟動雙引擎向量搜尋: 關鍵字 '{search_query}'")
                 query_vector = self.get_embedding(search_query)
                 
@@ -369,20 +315,19 @@ class RecommendService:
                     raw_results = []
                     for cafe_info in raw_cafes:
                         pid = cafe_info["place_id"]
-                        fusion_data = fusion_dict[pid]
-                        cafe_info['vector_score'] = (fusion_data["macro_score"] * 0.4) + (fusion_data["micro_score"] * 0.6)
-                        cafe_info['summary'] = fusion_data["summary"] if fusion_data["summary"] else cafe_info.get("scores", {}).get("summary", "")
-                        cafe_info['matched_review'] = fusion_data["matched_review"]
-                        cafe_info['match_type'] = 'vector' # 📌 貼上標籤：我是靠 AI 語意找出來的
+                        fusion_data_item = fusion_dict[pid]
+                        cafe_info['vector_score'] = (fusion_data_item["macro_score"] * 0.4) + (fusion_data_item["micro_score"] * 0.6)
+                        cafe_info['summary'] = fusion_data_item["summary"] if fusion_data_item["summary"] else cafe_info.get("scores", {}).get("summary", "")
+                        cafe_info['matched_review'] = fusion_data_item["matched_review"]
+                        cafe_info['match_type'] = 'vector' 
                         raw_results.append(cafe_info)
 
-                    # 這裡只過濾時間，不算分數！
                     raw_results = filter_by_opening_hours(raw_results)
                     logger.info(f"⏳ [漏斗監控] 時間過濾後，剩餘筆數: {len(raw_results)}")
                     final_candidates = raw_results
 
             # === Path B: Tag/Geo 搜尋 ===
-            if not final_candidates and (cafe_tag or not search_query):
+            if not final_candidates and not theme and (cafe_tag or not search_query): # 🛡️ 防護罩 3
                 target_tag = cafe_tag if cafe_tag else ""
                 logger.info(f"🌍 [Path B] 啟動地理/標籤搜尋 (Tag: {target_tag if target_tag else '無'})")
                 tag_list = [t.strip() for t in target_tag.split(",")] if target_tag else []
@@ -391,7 +336,7 @@ class RecommendService:
                     pipe = [{"$geoNear": {"near": {"type": "Point", "coordinates": [current_search_lng, current_search_lat]}, "distanceField": "dist_meters", "maxDistance": 3000, "spherical": True}}]
                     if blacklist_ids: pipe.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
                     if tags_to_search: pipe.append({"$match": {"tags": {"$all": tags_to_search}}})
-                    pipe.append({"$limit": 50}) # 直接抓 50 筆，交給後面的大腦去算分淘汰
+                    pipe.append({"$limit": 50}) 
                     return pipe
 
                 path_b_results = list(db['cafes'].aggregate(build_path_b_pipeline(tag_list)))
@@ -403,24 +348,23 @@ class RecommendService:
 
                 open_results = filter_by_opening_hours(path_b_results)
                 for item in open_results: 
-                    item['match_type'] = 'tag' # 📌 貼上標籤：我是靠標籤找出來的
+                    item['match_type'] = 'tag' 
                 final_candidates = open_results
 
             # 🌟🌟🌟 === 終極交接：呼叫外部的統一算分漏斗 === 🌟🌟🌟
-            logger.info(f"🚚 準備將 {len(final_candidates)} 家候選名單送入統一算分漏斗...")
-            
-            # 判斷是否需要給予「時間免死金牌」(當使用者找深夜店，或指定未來時間時)
-            ignore_time = is_midnight_search or (target_datetime is not None)
+            if not theme: # 🛡️ 防護罩 4：情境搜尋已經自己排好前10名，不需要過這個漏斗！
+                logger.info(f"🚚 準備將 {len(final_candidates)} 家候選名單送入統一算分漏斗...")
+                ignore_time = is_midnight_search or (target_datetime is not None)
+                final_data = process_and_score_cafes(
+                    candidates=final_candidates,
+                    user_loc=user_loc,
+                    user_id=user_id,
+                    rejected_tags=rejected_tags,
+                    ignore_time_penalty=ignore_time
+                )
+                logger.info(f"🏆 算分完成！最終選出 {len(final_data)} 家推薦名單。")
 
-            # 把剛剛收集到的所有候選店家，整包丟給 scoring.py 裡面的大腦！
-            final_data = process_and_score_cafes(
-                candidates=final_candidates,
-                user_loc=user_loc,
-                user_id=user_id,
-                rejected_tags=rejected_tags,
-                ignore_time_penalty=ignore_time
-            )
-            logger.info(f"🏆 算分完成！最終選出 {len(final_data)} 家推薦名單。")
+
 
             # === 🔥 [新增] 標籤動態排序與視覺化處理 ===
             def process_display_tags(raw_tags, query_text, btn_tag):
@@ -448,16 +392,28 @@ class RecommendService:
                 # 5. 排序並取前 3 個
                 sorted_tags = sorted(filtered_tags, key=get_weight, reverse=True)[:3]
                 
-                # 6. 使用引入的 TAG_EMOJI_MAP 轉成 Emoji 格式 (若字典沒有該 tag，則保持原文字)
-                return [TAG_EMOJI_MAP.get(t, t) for t in sorted_tags]
+                # 🚀 直接回傳乾淨的字串陣列！
+                return sorted_tags
             
-            # === 🔥 [新增] 根據使用者需求，讓 AI 動態生成客製化推薦理由 ===
-            target_req = search_query if search_query else cafe_tag
+            # === 🔥 [新增] 智能分流：讓 AI 動態生成客製化推薦理由 ===
             personalized_reasons = {}
-            if target_req and final_data:
-                logger.info(f"🧠 [AI 客製化理由] 正在為推薦清單生成專屬理由 (需求: {target_req})...")
-                personalized_reasons = self._generate_reasons_batch(target_req, final_data)
+            
+            # 🧠 關鍵邏輯：只有在「有輸入文字 (search_query)」且「不是點擊情境按鈕 (not theme)」時，才呼叫 AI 大魔王
+            if search_query and not theme and final_data:
+                logger.info(f"🧠 [智能分流] 偵測到複雜文字需求 '{search_query}'，啟動 AI 客製化理由生成...")
+                try:
+                    # 呼叫外包出去的 ReasonAgent
+                    personalized_reasons = await self.reason_agent.generate_reasons_batch(search_query, final_data)
+                except Exception as e:
+                    logger.error(f"⚠️ AI 生成理由失敗，將自動退回預設文字: {e}")
+            else:
+                logger.info("⚡ [智能分流] 點擊情境按鈕或無複雜需求，跳過 AI 生成以確保極速體驗！")
+            
 
+            ai_reasons = {}
+            if search_query and final_data:
+                ai_reasons = await self.reason_agent.generate_reasons_batch(search_query, final_data)
+                
             # === 格式化輸出 ===
             formatted_response = []
             for r in final_data:
@@ -467,12 +423,28 @@ class RecommendService:
                 review_count = db_ratings.get("review_amount", r.get("total_ratings", 0))
                 place_id_str = str(r.get("place_id", r.get("_id")))
                 
+                # ✨ [新增] 動態抽換標籤：如果是情境搜尋，讀取專屬 tags！
+                if theme:
+                    theme_tags_field = f"tags_{theme}"
+                    raw_theme_tags = r.get(theme_tags_field, [])
+                    # 把資料庫裡的字串加上 Emoji (透過 TAG_EMOJI_MAP)
+                    final_display_tags = raw_theme_tags[:3]
+                else:
+                    final_display_tags = process_display_tags(r.get("tags", []), search_query, cafe_tag)
+                
+        
                 # 取得預設的 summary 或 matched_review 作為備援
                 raw_summary = r.get("summary", r.get("scores", {}).get("summary", ""))
                 if not raw_summary: raw_summary = r.get("matched_review", "")
                 
-                # 🌟 取得 AI 客製化生成的理由，如果 AI 失敗或超時，就退回用原來的 summary
-                custom_reason = personalized_reasons.get(place_id_str, raw_summary)
+                # 🌟 終極版智能分流顯示邏輯：
+                if theme:
+                    # 情況 A：如果是點擊「適合辦公」等情境按鈕 -> 強制給空字串，隱藏文字區塊，版面極簡化！
+                    custom_reason = ""
+                else:
+                    # 情況 B：如果是手動打字 -> 優先拿 AI 寫好的客製化理由，如果 AI 失敗再退回 raw_summary。
+                    custom_reason = personalized_reasons.get(place_id_str, raw_summary)
+
 
                 formatted_response.append({
                     "place_id": r.get("place_id", str(r.get("_id"))),
@@ -480,7 +452,7 @@ class RecommendService:
                     "original_name": r.get("original_name"),
                     "dist_meters": int(r.get("dist_meters", 0)),
                     "rating": rating_val,
-                    "display_tags": process_display_tags(r.get("tags", []), search_query, cafe_tag),
+                    "display_tags": final_display_tags,
                     "attributes": r.get("attributes", {}),
                     "total_ratings": review_count,
                     "match_reason": r.get("matched_review", "符合條件"),

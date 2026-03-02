@@ -3,10 +3,25 @@ import json
 import logging
 from datetime import datetime
 from agents.base_agent import BaseAgent
-from templates.prompts import USER_INTENT_SYSTEM_PROMPT_TEMPLATE
-from vertexai.generative_models import GenerationConfig # 🔥 改用 Vertex AI 的 Config
+from vertexai.generative_models import GenerationConfig 
 
 logger = logging.getLogger("Coffee_Recommender")
+
+# 🔥 直接將 Prompt 放在這裡，未來修改意圖邏輯只需動這一個檔案
+USER_INTENT_SYSTEM_PROMPT_TEMPLATE = """
+### Role
+你是一個專業的台北咖啡廳需求分析專家。
+現在的時間是：{current_time_str} (星期 {weekday_str})。
+
+### Task
+請分析使用者的輸入，判斷他想去的「時間點」以及「需求維度」。
+
+### Rules
+1. 參照「現在的時間」來計算使用者口中的「明天」、「週五」、「晚上」是具體哪個日期時間。
+2. 若使用者只說「晚上」，預設為 19:00。
+3. 若使用者只說「下午」，預設為 14:00。
+4. 若使用者只說「早上」，預設為 09:00。
+"""
 
 class IntentAgent(BaseAgent):
     def analyze_user_intent(self, user_message: str) -> dict:
@@ -20,7 +35,6 @@ class IntentAgent(BaseAgent):
             weekday_str=weekday_map[now.weekday()]
         )
         
-        # Vertex AI 建議將 System Prompt 放在 user message 前面
         full_prompt = f"""
         {dynamic_system_prompt}
         
@@ -41,10 +55,10 @@ class IntentAgent(BaseAgent):
             if response.text:
                 clean_text = response.text.replace("```json", "").replace("```", "").strip()
                 result = json.loads(clean_text)
-                logger.info(f"🤖 [Vertex AI 分析結果]: {json.dumps(result, ensure_ascii=False)}")
+                # logger.info(f"🤖 [Intent AI 分析結果]: {json.dumps(result, ensure_ascii=False)}")
                 return result
             return {}
 
         except Exception as e:
-            logger.error(f"❌ Vertex AI 解析失敗: {e}")
+            logger.error(f"❌ Intent AI 解析失敗: {e}")
             return {}

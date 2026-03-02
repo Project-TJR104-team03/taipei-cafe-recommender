@@ -111,38 +111,38 @@ class OnlineMicroBatchLauncher:
         self.max_retries = 3  # 🌟 設定每批次最大重試次數
 
 
-    def submit(self, input_path, output_path, model_id):
+    def submit(self, input_path, output_folder, model_id):
 
+        if not output_folder.endswith('/'):
+            output_folder += '/'
         bucket = self.storage_client.bucket(self.bucket_name)
         in_blob = bucket.blob(input_path)
-        out_blob = bucket.blob(output_path)
 
         if not in_blob.exists():
             error_msg = f"❌ GCS 找不到來源檔案: {input_path}"
             logger.error(error_msg)
             raise FileNotFoundError(error_msg)
-        
-        local_input = f"/tmp/input_{int(time.time())}.jsonl"
-        local_output = f"/tmp/output_{int(time.time())}.jsonl"
-
-        logger.info(f"📥 從 GCS 下載來源檔案至暫存區...")
-        in_blob.download_to_filename(local_input)
 
         model = TextEmbeddingModel.from_pretrained(model_id)
 
         # 斷點續傳機制
-        processed_count = 0
-        if out_blob.exists():
-            logger.info(f"📥 發現 GCS 既有進度，下載同步中...")
-            out_blob.download_to_filename(local_output)
-            with open(local_output, 'r', encoding='utf-8') as f:
-                processed_count = sum(1 for _ in f)
-            logger.info(f"♻️ 斷點續傳：將從第 {processed_count} 筆開始接續執行...")
-    
-        total_records = sum(1 for line in open(local_input, 'r', encoding='utf-8') if line.strip())
-        logger.info(f"📊 [Online 引擎] 總共有 {total_records} 筆向量資料待處理...")
+        existing_blobs = list(bucket.list_blobs(prefix=output_folder))
+        existing_batches = [b.name for b in existing_blobs if "batch_" in b.name and b.name.endswith(".jsonl")]
+        
+        current_batch_index = len(existing_batches)
+        processed_count = current_batch_index * self.batch_size
 
-        with open(local_input, 'r', encoding='utf-8') as f_in, open(local_output, 'a', encoding='utf-8') as f_out:
+        logger.info(f"♻️ 發現 {current_batch_index} 個已完成的分片。將從第 {processed_count} 筆資料開始接續執行...")
+        # ==========================================
+        # 2. 流式讀取來源檔 (避免 OOM)
+        # ==========================================
+        logger.info(f"🚀 [Online 引擎] 開始以流式讀取處理資料...")
+        
+        # 只需要一個很小的暫存檔來存放當下的 100 筆
+        import tempfile
+        temp_dir = tempfile.gettempdir()
+
+        with in_blob.open("r", encoding="utf-8") as f_in:
             for _ in range(processed_count):
                 next(f_in, None)
 
@@ -153,52 +153,57 @@ class OnlineMicroBatchLauncher:
                 batch.append(json.loads(line))
 
                 # 當湊滿 100 筆，或是已經讀到檔案的最後一筆時，開始執行 AI 任務
-                if len(batch) == self.batch_size or (i + 1) == total_records:
-                    texts = [item["content"] for item in batch]
-                    
-                    success = False
-                    for attempt in range(self.max_retries):
-                        try:
-                            inputs = [TextEmbeddingInput(text=t, task_type="RETRIEVAL_DOCUMENT") for t in texts]
-                            embeddings = model.get_embeddings(
-                            inputs,
-                            output_dimensionality=1536,
-                            )
-                        
-                            for j, embedding in enumerate(embeddings):
-                                result_record = batch[j]
-                                result_record["embedding_1536"] = embedding.values
-                                f_out.write(json.dumps(result_record, ensure_ascii=False) + '\n')
-                        
-                            f_out.flush()
-                            logger.info(f"✅ 進度: {i + 1} / {total_records}")
-
-                       
-                            if (i + 1) % 500 == 0 or (i + 1) >= total_records:
-                                logger.info(f"☁️ 正在將進度同步備份至 GCS...")
-                                out_blob.upload_from_filename(local_output)
-
-                            time.sleep(1) # 速率控制
-                            success = True
-                            break # 本批次成功，跳出重試迴圈
-
-                        except Exception as e:
-                            logger.warning(f"⚠️ 批次 {i} 到 {i+len(batch)} 發生錯誤 (第 {attempt+1}/{self.max_retries} 次): {e}")
-                            time.sleep(10 * (attempt + 1)) # 遞增等待時間 (10s, 20s, 30s)
-            
-             # 🌟 修正 3：如果重試 3 次都失敗，強制中斷任務，讓 Airflow 亮紅燈
-                    if not success:
-                        fatal_msg = f"❌ 批次 {i} 處理失敗已達上限，終止任務以保護資料完整性！"
-                        logger.error(fatal_msg)
-                        if os.path.exists(local_output):
-                            out_blob.upload_from_filename(local_output)
-                        raise Exception(fatal_msg)
-            
+                if len(batch) == self.batch_size:
+                    self._process_and_upload_batch(batch, current_batch_index, output_folder, bucket, model, temp_dir)
+                    current_batch_index += 1
                     batch = []
+            if batch:
+                self._process_and_upload_batch(batch, current_batch_index, output_folder, bucket, model, temp_dir)
 
-        logger.info(f"🎉 1536d 向量全部處理完成！已輸出至: {output_path}")
-        if os.path.exists(local_input): os.remove(local_input)
-        if os.path.exists(local_output): os.remove(local_output)
+        logger.info(f"🎉 所有向量資料已成功分片寫入至 GCS 資料夾: gs://{self.bucket_name}/{output_folder}")
+    
+    def _process_and_upload_batch(self, batch, batch_index, output_folder, bucket, model, temp_dir):
+        texts = [item["content"] for item in batch]
+        success = False
+        
+        for attempt in range(self.max_retries):
+            try:
+                inputs = [TextEmbeddingInput(text=t, task_type="RETRIEVAL_DOCUMENT") for t in texts]
+                embeddings = model.get_embeddings(
+                    inputs,
+                    output_dimensionality=1536,
+                )
+                
+                # 將這 100 筆資料寫入本地暫存檔
+                # 檔名補零，例如 batch_00000.jsonl, batch_00001.jsonl
+                batch_filename = f"batch_{batch_index:05d}.jsonl"
+                local_batch_path = os.path.join(temp_dir, batch_filename)
+                
+                with open(local_batch_path, 'w', encoding='utf-8') as f_out:
+                    for j, embedding in enumerate(embeddings):
+                        result_record = batch[j]
+                        result_record["embedding_1536"] = embedding.values
+                        f_out.write(json.dumps(result_record, ensure_ascii=False) + '\n')
+                
+                # 上傳這個小分片到 GCS
+                gcs_destination = f"{output_folder}{batch_filename}"
+                out_blob = bucket.blob(gcs_destination)
+                out_blob.upload_from_filename(local_batch_path)
+                
+                # 上傳完畢立即刪除本地暫存檔，釋放空間
+                os.remove(local_batch_path)
+                
+                logger.info(f"✅ 完成分片上傳: {gcs_destination} (累積處理約 {(batch_index + 1) * self.batch_size} 筆)")
+                success = True
+                time.sleep(1) # API 速率控制
+                break
+                
+            except Exception as e:
+                logger.warning(f"⚠️ 分片 {batch_index} 發生錯誤 (第 {attempt+1}/{self.max_retries} 次): {e}")
+                time.sleep(5 * (attempt + 1))
+        
+        if not success:
+            raise Exception(f"❌ 分片 {batch_index} 重試失敗達上限，任務終止！")
 
 # ==========================================
 # [總司令部] 任務路由控制中心
@@ -223,10 +228,10 @@ if __name__ == "__main__":
         SOURCE_FILE = os.getenv("GCS_STAGE_C_EMBEDDING_JSONL_PATH", "transform/stageC/vertex_job_stage_c_embedding.jsonl")
         TASK_NAME = "embedding_generation"
         MODEL_ID = "gemini-embedding-001"
-        OUTPUT_FILE = os.getenv("GCS_EMBEDDING_RESULTS_OUTPUT", "batch_output/embedding_generation/final_1536_vectors_for_mongo.jsonl")
+        OUTPUT_FOLDER = os.getenv("GCS_EMBEDDING_RESULTS_OUTPUT", "batch_output/embedding_generation/")
 
         launcher = OnlineMicroBatchLauncher(PROJECT_ID, LOCATION, BUCKET_NAME)
-        launcher.submit(SOURCE_FILE, OUTPUT_FILE, MODEL_ID)
+        launcher.submit(SOURCE_FILE, OUTPUT_FOLDER, MODEL_ID)
 
     else:
         logger.error("❌ 未知的任務類型設定")

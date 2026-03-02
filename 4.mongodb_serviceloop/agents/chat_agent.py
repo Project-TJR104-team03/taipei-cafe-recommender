@@ -3,7 +3,7 @@ import json
 import logging
 from agents.base_agent import BaseAgent
 from vertexai.generative_models import GenerationConfig 
-from constants import TAG_EMOJI_MAP
+from constants import STANDARD_TAGS
 
 logger = logging.getLogger("Coffee_Recommender")
 
@@ -18,7 +18,7 @@ class ChatAgent(BaseAgent):
                 "opening": "正在搜尋中...", "closing": "希望您喜歡！"
             }
 
-        valid_tags_list = list(TAG_EMOJI_MAP.keys())
+        valid_tags_list = STANDARD_TAGS
         valid_tags = ", ".join(valid_tags_list)
         
         # ✨ 大幅翻新 Prompt：注入「資深吃貨網友」的靈魂

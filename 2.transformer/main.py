@@ -23,6 +23,7 @@ TASK_ROUTING_TABLE = {
     # --- Stage B: 特徵融合與評分 ---
     "stageB_merger": "llm_src.stageB_convergence.tags_Merger",
     "stageB_scorer": "llm_src.stageB_convergence.tag_scorer",
+    "stageB_scenario_aggregator": "llm_src.stageB_convergence.scenario_aggregator",
     
     # --- Stage C: 向量生成 ---
     "stageC_builder": "llm_src.stageC_embeddin.embed_builder",
