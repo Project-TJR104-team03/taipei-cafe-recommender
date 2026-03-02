@@ -395,14 +395,20 @@ class RecommendService:
                 # 🚀 直接回傳乾淨的字串陣列！
                 return sorted_tags
             
-            # === 🔥 [新增] 根據使用者需求，讓 AI 動態生成客製化推薦理由 ===
-            # 5. [AI 客製化推薦理由] 如果有明確需求，批次請 AI 生成一句話理由
-            target_req = search_query if search_query else cafe_tag
+            # === 🔥 [新增] 智能分流：讓 AI 動態生成客製化推薦理由 ===
             personalized_reasons = {}
-            if target_req:
-                logger.info(f"🧠 [AI 客製化理由] 正在為推薦清單生成專屬理由 (需求: {target_req})...")
-                # ✨ 改成呼叫外包出去的 ReasonAgent，並且記得加上 await
-                personalized_reasons = await self.reason_agent.generate_reasons_batch(target_req, final_data)
+            
+            # 🧠 關鍵邏輯：只有在「有輸入文字 (search_query)」且「不是點擊情境按鈕 (not theme)」時，才呼叫 AI 大魔王
+            if search_query and not theme and final_data:
+                logger.info(f"🧠 [智能分流] 偵測到複雜文字需求 '{search_query}'，啟動 AI 客製化理由生成...")
+                try:
+                    # 呼叫外包出去的 ReasonAgent
+                    personalized_reasons = await self.reason_agent.generate_reasons_batch(search_query, final_data)
+                except Exception as e:
+                    logger.error(f"⚠️ AI 生成理由失敗，將自動退回預設文字: {e}")
+            else:
+                logger.info("⚡ [智能分流] 點擊情境按鈕或無複雜需求，跳過 AI 生成以確保極速體驗！")
+            
 
             ai_reasons = {}
             if search_query and final_data:
@@ -425,14 +431,20 @@ class RecommendService:
                     final_display_tags = raw_theme_tags[:3]
                 else:
                     final_display_tags = process_display_tags(r.get("tags", []), search_query, cafe_tag)
-
-
+                
+        
                 # 取得預設的 summary 或 matched_review 作為備援
                 raw_summary = r.get("summary", r.get("scores", {}).get("summary", ""))
                 if not raw_summary: raw_summary = r.get("matched_review", "")
                 
-                # 🌟 取得 AI 客製化生成的理由，如果 AI 失敗或超時，就退回用原來的 summary
-                custom_reason = personalized_reasons.get(place_id_str, raw_summary)
+                # 🌟 終極版智能分流顯示邏輯：
+                if theme:
+                    # 情況 A：如果是點擊「適合辦公」等情境按鈕 -> 強制給空字串，隱藏文字區塊，版面極簡化！
+                    custom_reason = ""
+                else:
+                    # 情況 B：如果是手動打字 -> 優先拿 AI 寫好的客製化理由，如果 AI 失敗再退回 raw_summary。
+                    custom_reason = personalized_reasons.get(place_id_str, raw_summary)
+
 
                 formatted_response.append({
                     "place_id": r.get("place_id", str(r.get("_id"))),
