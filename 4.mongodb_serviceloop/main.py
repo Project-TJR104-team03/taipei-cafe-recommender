@@ -559,32 +559,66 @@ async def background_handle_text(event):
     is_old_user = user_service.check_user_exists(user_id)
 
     if loc:
-        # 這裡去呼叫 AI 就算花 5 秒，也不會卡住 Webhook 了！
-        ai_result = chat_agent.analyze_chat_intent(user_msg)
+        # 🧠 1. 喚醒記憶：獲取使用者 RAM
+        user_state = user_service.get_user_state(user_id)
+        chat_window = user_state.get("chat_window", [])
+        current_cart = user_state.get("search_cart", [])
+        last_session_cart = user_state.get("last_session_cart", [])
+        last_updated = user_state.get("last_updated_at")
+
+        # ⏳ 2. 逾時檢查 (Timeout Reset)：超過 4 小時自動移至備份車
+        if last_updated:
+            if datetime.now() - last_updated > timedelta(minutes=30):
+                if current_cart:
+                    last_session_cart = current_cart # 備份昨日條件
+                current_cart = []
+                chat_window = []
+
+        # 🤖 3. 呼叫終極大腦
+        ai_result = chat_agent.manage_dialogue_and_cart(
+            user_msg=user_msg,
+            chat_window=chat_window,
+            current_cart=current_cart,
+            last_session_cart=last_session_cart
+        )
+
         mode = ai_result.get("mode", "search")
-        
+        reply_text = ai_result.get("reply", "")
+        updated_cart = ai_result.get("updated_cart", [])
+
+        # 📝 4. 更新滑動視窗 (保留最近 6 句話的輕量陣列)
+        chat_window.append(f"User: {user_msg}")
+        if mode == "chat" and reply_text:
+            chat_window.append(f"AI: {reply_text}")
+        if len(chat_window) > 6:
+            chat_window = chat_window[-6:] # 把太舊的擠掉
+
+        # 💾 5. 將最新狀態存回 RAM
+        user_service.update_user_state(user_id, chat_window, updated_cart, last_session_cart)
+
+        # 💬 6. 執行分支：如果是純聊天或隔夜反問，直接回覆並結束
         if mode == "chat":
-            reply_text = ai_result.get("reply", "")
             try:
                 line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text, quick_reply=get_standard_quick_reply()))
             except: pass
             return
 
-        extracted_tags = ai_result.get("tags", [])
+        # 🔎 7. 執行分支：進入 Search 模式
         extracted_keyword = ai_result.get("keyword", "")
-        search_term = extracted_keyword if extracted_keyword else (extracted_tags[0] if extracted_tags else "熱門")
-        
+        search_term = extracted_keyword if extracted_keyword else " ".join(updated_cart)
+        if not search_term.strip(): search_term = "熱門"
+
+        extracted_tags = ai_result.get("tags", [])
         primary_tag = extracted_tags[0] if extracted_tags else None
 
-        if not is_old_user:
-            user_service.log_action(user_id, "INIT_PREF", "SYSTEM_INIT", reason=None, user_msg=user_msg, ai_analysis=ai_result, lat=lat, lng=lng, metadata={"interaction_type": "text_message", "ai_mode": ai_result.get("mode"), "has_location": loc is not None})
-        else:
-            user_service.log_action(user_id, "SEARCH", "SYSTEM_SEARCH", reason=None, user_msg=user_msg, ai_analysis=ai_result, lat=lat, lng=lng, metadata={"interaction_type": "text_message", "ai_mode": ai_result.get("mode"), "has_location": loc is not None})
+        # 紀錄 Log
+        log_action = "SEARCH" if is_old_user else "INIT_PREF"
+        user_service.log_action(user_id, log_action, "SYSTEM_SEARCH", reason=None, user_msg=user_msg, ai_analysis=ai_result, lat=lat, lng=lng, metadata={"interaction_type": "text_message", "ai_mode": mode, "has_location": True})
 
-        opening = ai_result.get("opening", "好的，正在幫您搜尋中...")
-        closing = ai_result.get("closing", "希望這些店符合您的需求！")
+        opening = ai_result.get("opening", "好的，正在為您特搜中...")
+        closing = ai_result.get("closing", "希望這幾家店符合您的期待！")
 
-        # ⚡ 因為我們已經在 async 背景任務裡了，直接 await 即可！
+        # ⚡ 執行推薦與出菜 (💡 注意：我們已經取消後端強制清空購物車，全權交給 AI 決定了！)
         await process_recommendation(
             event.reply_token, lat, lng, user_id, 
             tag=primary_tag, 
@@ -656,6 +690,7 @@ def handle_postback(event):
         
         if loc:
             op_msg = f"收到！馬上為您尋找最高分的「{theme_names.get(theme, '專屬')}」神店... 🚀"
+            user_service.update_user_state(user_id, [], [theme_names.get(theme, "")], [])
             asyncio.create_task(process_recommendation(event.reply_token, lat, lng, user_id=user_id, theme=theme, opening=op_msg))
         else:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📍 請先分享位置，我才能幫您找附近的店喔！", quick_reply=get_standard_quick_reply()))
@@ -667,6 +702,7 @@ def handle_postback(event):
         if loc:
             user_service.update_user_location(user_id, lat, lng, tag=mapped_tag)
             op, cl = get_button_reaction(ui_tag)
+            user_service.update_user_state(user_id, [], [ui_tag], [])
             asyncio.create_task(process_recommendation(event.reply_token, lat, lng, user_id=user_id, tag=mapped_tag, opening=op, closing=cl))
         else:
             pending_search_sessions[user_id] = ui_tag
@@ -686,6 +722,7 @@ def handle_postback(event):
         
         user_service.update_user_location(user_id, lat, lng, tag=tag)
         op, cl = get_button_reaction(tag)
+        user_service.update_user_state(user_id, [], [tag], [])
         asyncio.create_task(process_recommendation(event.reply_token, lat, lng, user_id=user_id, tag=tag, opening=op, closing=cl))
         return
 
