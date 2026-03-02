@@ -63,7 +63,7 @@ with DAG(
     default_args=default_args,
     description='咖啡廳資料清洗、AI 審計與向量化管線',
     schedule_interval=None, # 設定排程，例如 '@daily'，目前設為手動觸發
-    start_date=datetime(2026, 2, 26),
+    start_date=pendulum.datetime(2026, 2, 26, tz="Asia/Taipei"),
     catchup=False,
     tags=['cafe_project', 'etl', 'vertex_ai'],
 ) as dag:
@@ -112,6 +112,7 @@ with DAG(
     # --- Stage B: 特徵融合與評分 ---
     stageB_merger = create_cloud_run_task("stageB_merger", "stageB_merger")
     stageB_scorer = create_cloud_run_task("stageB_scorer", "stageB_scorer")
+    stageB_scenario_aggregator = create_cloud_run_task("stageB_scenario_aggregator", "stageB_scenario_aggregator")
 
     notify_stageB = PythonOperator(
     task_id='notify_stageB_done',
@@ -151,10 +152,10 @@ with DAG(
     stageA_processor >> stageA_launcher >> stageA_parser
 
     # 4. Stage B 核心流程
-    stageA_parser >> notify_stageA >> stageB_merger >> stageB_scorer
+    stageA_parser >> notify_stageA >> stageB_merger >> stageB_scorer >> stageB_scenario_aggregator
 
     # 5. Stage C 核心流程
-    stageB_scorer >> notify_stageB >>stageC_builder >> stageC_launcher
+    stageB_scenario_aggregator >> notify_stageB >>stageC_builder >> stageC_launcher
 
     # 6. Stage D 寫入 MongoDB
     stageC_launcher >> notify_stageC >> stageD_ingestor >> notify_stageD

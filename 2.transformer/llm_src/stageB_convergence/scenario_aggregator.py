@@ -1,8 +1,16 @@
 import pandas as pd
 import logging
 import json
+import os
+import io
+from google.cloud import storage
+from dotenv import load_dotenv
+
 # 從 config 中把權重矩陣跟翻譯字典一起 import 進來
-from tag_config import SCENARIO_CONFIG, FEATURE_TO_ZH 
+from configs import tag_config
+from configs.tag_config import SCENARIO_CONFIG, FEATURE_TO_ZH
+
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -39,7 +47,7 @@ def get_surprise_tags(row_dict, scenario_name, config, top_n=3, threshold=0.6):
     return top_tags
 
 # ==========================================
-# 3. 主聚合運算子 (Main Operator)
+# 2. 主聚合運算子 (Main Operator)
 # ==========================================
 def apply_scenario_scores(df, config=SCENARIO_CONFIG):
     logger.info("開始執行場景聚合運算與驚喜標籤生成...")
@@ -78,16 +86,24 @@ def apply_scenario_scores(df, config=SCENARIO_CONFIG):
     return df
 
 # ==========================================
-# 4. 內部紅隊測試 (Execution)
+# 3. 雲端執行引擎 (Cloud Runner)
 # ==========================================
-if __name__ == "__main__":
-    INPUT_FILE = "final_scored_data.json"
-    OUTPUT_FILE = "cafes_with_scenarios_final.csv"
-    
-    try:
-        with open(INPUT_FILE, 'r', encoding='utf-8') as f:
-            raw_data = json.load(f)
+class StageB_CloudCalculator:
+    def __init__(self, project_id, bucket_name):
+        self.storage_client = storage.Client(project=project_id)
+        self.bucket = self.storage_client.bucket(bucket_name)
+
+    def process_and_upload(self, input_gcs_path, output_gcs_path):
+        logger.info(f"📥 正在從 GCS 下載評分資料: gs://{self.bucket.name}/{input_gcs_path}")
+        
+        # 1. 直接在記憶體中讀取 GCS 的 JSON
+        in_blob = self.bucket.blob(input_gcs_path)
+        if not in_blob.exists():
+            raise FileNotFoundError(f"❌ 找不到來源檔案: {input_gcs_path}")
             
+        raw_data = json.loads(in_blob.download_as_text(encoding='utf-8'))
+            
+        # 2. 資料轉換與清理
         records = []
         for pid, info in raw_data.items():
             record = {"place_id": info.get("place_id"), "place_name": info.get("place_name")}
@@ -96,15 +112,39 @@ if __name__ == "__main__":
             records.append(record)
             
         df = pd.DataFrame(records)
-        df_enriched = apply_scenario_scores(df)
-        df_enriched.to_csv(OUTPUT_FILE, index=False)
-        logger.info(f"🎉 運算完成！檔案已儲存至: {OUTPUT_FILE}")
         
-        # 印出結果驗證
-        print("\n🔍 【適合辦公】Top 3 店家及其驚喜標籤 (應排除插座/網路等)：")
+        # 3. 執行核心運算
+        df_enriched = apply_scenario_scores(df)
+        
+        # 4. 直接將 DataFrame 轉為字串並上傳至 GCS (不落地，拯救 I/O)
+        logger.info(f"☁️ 正在將運算結果上傳至 GCS: gs://{self.bucket.name}/{output_gcs_path}")
+        csv_buffer = df_enriched.to_csv(index=False, encoding='utf-8-sig')
+        out_blob = self.bucket.blob(output_gcs_path)
+        out_blob.upload_from_string(csv_buffer, content_type='text/csv')
+        
+        logger.info(f"🎉 雲端運算完成！場景分數已安全降落。")
+        
+        # 印出結果驗證 (Cloud Logging 會自動捕捉)
+        print("\n🔍 【適合辦公】Top 3 店家及其驚喜標籤：")
         cols = ['place_name', 'score_workspace', 'tags_score_workspace']
         top_workspace = df_enriched[cols].sort_values(by='score_workspace', ascending=False).head(3)
         print(top_workspace.to_string(index=False))
-        
+
+# ==========================================
+# [總司令部]
+# ==========================================
+if __name__ == "__main__":
+    PROJECT_ID = os.getenv("PROJECT_ID")
+    BUCKET_NAME = os.getenv("BUCKET_NAME")
+    
+    # 輸入：Stage B 剛產出的打分 JSON
+    INPUT_PATH = os.getenv("GCS_FINAL_SCORED_PATH", "transform/stageB/final_scored_data.json")
+    
+    # 輸出：準備餵給 Stage C / MongoIngestor 的 CSV
+    OUTPUT_PATH = os.getenv("GCS_SCENARIO_CSV_PATH", "transform/stageB/cafes_with_scenarios_final.csv")
+    
+    try:
+        calculator = StageB_CloudCalculator(PROJECT_ID, BUCKET_NAME)
+        calculator.process_and_upload(INPUT_PATH, OUTPUT_PATH)
     except Exception as e:
-        logger.error(f"執行失敗: {e}")
+        logger.error(f"❌ 雲端任務執行失敗: {e}")
