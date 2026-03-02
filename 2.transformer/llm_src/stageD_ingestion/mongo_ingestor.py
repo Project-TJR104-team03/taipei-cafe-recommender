@@ -4,9 +4,10 @@ import os
 import re
 import logging
 import io
+import time
 from datetime import datetime, timezone
 from google.cloud import storage
-from pymongo import MongoClient, UpdateOne
+from pymongo import MongoClient, UpdateOne, GEOSPHERE
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -79,6 +80,7 @@ class MongoFinalIngestor:
         self.db = self.client[db_name]
         self.cafes_col = self.db["cafes"]
         self.review_col = self.db["AI_embedding"]
+        self.cafes_col.create_index([("location", GEOSPHERE)])
         
         self.gcs_client = storage.Client(project=PROJECT_ID)
         self.bucket = self.gcs_client.bucket(BUCKET_NAME)
@@ -131,9 +133,9 @@ class MongoFinalIngestor:
             return
 
         # 2. 尋找 Vertex AI 產出的向量檔案
-        vector_blob = self._get_latest_prediction_blob(gcs_vector_folder)
-        if not vector_blob:
-            logger.error(f"❌ 在 GCS 路徑 {gcs_vector_folder} 找不到任何向量預測檔案。")
+        vector_blob = self.bucket.blob(gcs_vector_folder) # 這裡的 gcs_vector_folder 實際上要是完整的檔案路徑
+        if not vector_blob.exists():
+            logger.error(f"❌ 在 GCS 路徑 {gcs_vector_folder} 找不到向量檔案。")
             return
         
         logger.info(f"🔍 鎖定向量來源檔案: gs://{self.bucket.name}/{vector_blob.name}")
@@ -150,122 +152,151 @@ class MongoFinalIngestor:
         batch_size = 500
         counts = {"store": 0, "review": 0}
 
-        vector_content = vector_blob.download_as_text(encoding='utf-8')
+        local_vector_path = f"/tmp/vector_read_{int(time.time())}.jsonl"
+        logger.info(f"📥 正在將巨型向量檔下載至本地暫存區: {local_vector_path} ...")
+        # 實體下載檔案，拯救記憶體！
+        vector_blob.download_to_filename(local_vector_path)
+
 
         logger.info("🚀 開始執行【三方資料大融合】與寫入作業...")
         
-        for line in vector_content.splitlines():
-            if not line.strip(): continue
-            try:
-                data = json.loads(line)
-                # Vertex AI Batch 輸出通常封裝在 'instance' 或直接在層級下，視設定而定
-                # 這裡假設你的 Stage C 封裝格式
-                vector = data.get("embedding")
-                if not vector:
-                    # 如果是從 Vertex AI 產出的原始 JSONL，向量可能在 response.predictions[0].embeddings.values
-                    # 這裡根據你解析後的內容調整
-                    vector = data.get("response", {}).get("predictions", [{}])[0].get("embeddings", {}).get("values")
-                
-                if not vector: continue
-
-                doc_type = data.get("doc_type")
+        with open(local_vector_path, 'r', encoding='utf-8') as f:
+            for line_num, line in enumerate(f, start=1):
+                line = line.strip() # 去除頭尾空白與換行符號
+                if not line: 
+                    continue # 完美略過純空白行
+                try:
+                    # 嘗試解析 JSON
+                    data = json.loads(line)
                     
-                # ==========================================
-                # 邏輯 A：店家總表 (Cafes) -> 執行記憶體 Join
-                # ==========================================
-                if doc_type == "store_level":
-                    place_id = data.get("custom_id")
-                    
-                    # --- [三方資料 Join] ---
-                    # [關鍵操作]：直接從 Ground Truth 提取完整資料，放棄有缺失的 safe_metadata
-                    ai_data = scored_data_map.get(place_id, {})
-                    meta_filter = ai_data.get("metadata_for_filtering", {})
-                    phys_data = raw_store_map.get(place_id, pd.Series())
+                except json.JSONDecodeError as e:
+                    # 🌟 防護罩：印出到底是哪一行、長什麼樣子導致解析失敗
+                    logger.error(f"❌ [第 {line_num} 行] JSON 解析失敗: {e}")
+                    # 使用 repr() 把隱藏的換行符號 \n 或特殊字元現形，最多印出前 200 個字元防洗版
+                    logger.error(f"🔍 兇手字串長這樣: {repr(line[:200])}...")
+                    continue # 放棄這筆髒資料，繼續拯救下一筆！
 
-                    # 解析 Types 邏輯 (來自 store_to_db)
-                    raw_types = phys_data.get('types')
-                    if pd.notna(raw_types):
-                        all_types = [t.strip() for t in str(raw_types).split(',')]
-                        kick_tags = {'point_of_interest', 'establishment', 'store'}
-                        types_list = [t for t in all_types if t not in kick_tags]
-                        if 'cafe' not in types_list: types_list.append('cafe')
-                    else:
-                        types_list = ['cafe']
+                except Exception as e:
+                    logger.error(f"❌ [第 {line_num} 行] 發生未知錯誤: {e}")
+                    continue
 
-                    # 強制數值轉型防禦
-                    raw_scores = meta_filter.get("feature_scores", {})
-                    float_scores = {k: float(v) for k, v in raw_scores.items() if v is not None}
+
+                try:
+                    vector = data.get("embedding")
+                    if not vector:
+                        # 如果是從 Vertex AI 產出的原始 JSONL，向量可能在 response.predictions[0].embeddings.values
+                        # 這裡根據你解析後的內容調整
+                        vector = data.get("response", {}).get("predictions", [{}])[0].get("embeddings", {}).get("values")
                     
-                    # --- 組裝終極版 Schema (對齊 v1.2) ---
-                    store_node = {
-                        "place_id": place_id,
-                        "original_name": str(phys_data.get('name', ai_data.get('place_name'))),
-                        "location": {
+                    if not vector: continue
+
+                    doc_type = data.get("doc_type")
+                        
+                    # ==========================================
+                    # 邏輯 A：店家總表 (Cafes) -> 執行記憶體 Join
+                    # ==========================================
+                    if doc_type == "store_level":
+                        place_id = data.get("custom_id")
+                        
+                        # --- [三方資料 Join] ---
+                        # [關鍵操作]：直接從 Ground Truth 提取完整資料，放棄有缺失的 safe_metadata
+                        ai_data = scored_data_map.get(place_id, {})
+                        meta_filter = ai_data.get("metadata_for_filtering", {})
+                        phys_data = raw_store_map.get(place_id, pd.Series())
+
+                        # 解析 Types 邏輯 (來自 store_to_db)
+                        raw_types = phys_data.get('types')
+                        if pd.notna(raw_types):
+                            all_types = [t.strip() for t in str(raw_types).split(',')]
+                            kick_tags = {'point_of_interest', 'establishment', 'store'}
+                            types_list = [t for t in all_types if t not in kick_tags]
+                            if 'cafe' not in types_list: types_list.append('cafe')
+                        else:
+                            types_list = ['cafe']
+
+                        # 強制數值轉型防禦
+                        raw_scores = meta_filter.get("feature_scores", {})
+                        float_scores = {k: float(v) for k, v in raw_scores.items() if v is not None}
+                        
+                        coords = parse_wkt_point(phys_data.get('location'))
+                        # 如果有座標才建立 GeoJSON 結構，否則整包設為 None
+                        location_dict = {
                             "type": "Point",
-                            "coordinates": parse_wkt_point(phys_data.get('location'))
-                        },
-                        "area_info": extract_area_info(phys_data.get('formatted_address')),
-                        "attributes": {
-                            "price_level": float(phys_data['price_level']) if pd.notna(phys_data.get('price_level')) else None,
-                            "business_status": str(phys_data.get('business_status')) if pd.notna(phys_data.get('business_status')) else "OPERATIONAL",
-                            "types": types_list
-                        },
-                        "contact": {
-                            "phone": str(phys_data['formatted_phone_number']) if pd.notna(phys_data.get('formatted_phone_number')) else None,
-                            "website": str(phys_data['website']) if pd.notna(phys_data.get('website')) else None,
-                            "google_maps_url": str(phys_data['google_maps_url']) if pd.notna(phys_data.get('google_maps_url')) else None
-                        },
-                        "opening_hours": {
-                            "periods": parse_opening_hours_to_periods(phys_data.get('opening_hours')),
-                            "is_24_hours": True if (pd.notna(phys_data.get('opening_hours')) and "24 小時" in str(phys_data.get('opening_hours'))) else False
-                        },
-                        "tags": meta_filter.get("tags", []),          
-                        "features": meta_filter.get("features", {}),   
-                        "scores": float_scores,                       
-                        "vector": vector,                              
-                        "summary": data.get("content", ""),            
-                        "embedding_config": {
-                                "model": "gemini-embedding-001",
-                                "dimension": 1536,
-                                "stage": "Final_Merged"},
-                        "last_updated": datetime.now(timezone.utc)
-                    }
+                            "coordinates": coords
+                        } if coords[0] is not None else None
 
-                    cafes_ops.append(UpdateOne({"place_id": place_id}, {"$set": store_node}, upsert=True))
-                    counts["store"] += 1
-                    
 
-                # ==========================================
-                # 邏輯 B：評論佐證表 (AI_embedding)
-                # ==========================================
-                elif doc_type == "review_level":
-                    doc_id = data.get("custom_id")
-                    review_doc = {
-                        "doc_id": doc_id,
-                        "place_id": data.get("parent_place_id", ""),
-                        "content": data.get("content", ""),
-                        "embedding": vector,
-                        "doc_type": "review_level"
-                    }
-                    review_ops.append(UpdateOne({"doc_id": doc_id}, {"$set": review_doc}, upsert=True))
-                    counts["review"] += 1
+                        # --- 組裝終極版 Schema (對齊 v1.2) ---
+                        store_node = {
+                            "place_id": place_id,
+                            "original_name": str(phys_data.get('name', ai_data.get('place_name'))),
+                            "location": location_dict,
+                            "area_info": extract_area_info(phys_data.get('formatted_address')),
+                            "attributes": {
+                                "price_level": float(phys_data['price_level']) if pd.notna(phys_data.get('price_level')) else None,
+                                "business_status": str(phys_data.get('business_status')) if pd.notna(phys_data.get('business_status')) else "OPERATIONAL",
+                                "types": types_list
+                            },
+                            "contact": {
+                                "phone": str(phys_data['formatted_phone_number']) if pd.notna(phys_data.get('formatted_phone_number')) else None,
+                                "website": str(phys_data['website']) if pd.notna(phys_data.get('website')) else None,
+                                "google_maps_url": str(phys_data['google_maps_url']) if pd.notna(phys_data.get('google_maps_url')) else None
+                            },
+                            "opening_hours": {
+                                "periods": parse_opening_hours_to_periods(phys_data.get('opening_hours')),
+                                "is_24_hours": True if (pd.notna(phys_data.get('opening_hours')) and "24 小時" in str(phys_data.get('opening_hours'))) else False
+                            },
+                            "tags": meta_filter.get("tags", []),          
+                            "features": meta_filter.get("features", {}),   
+                            "scores": float_scores,                       
+                            "vector": vector,                              
+                            "summary": data.get("content", ""),            
+                            "embedding_config": {
+                                    "model": "gemini-embedding-001",
+                                    "dimension": 1536,
+                                    "stage": "Final_Merged"},
+                            "last_updated": datetime.now(timezone.utc)
+                        }
 
-                # 批次提交
-                if len(cafes_ops) >= batch_size:
-                    self.cafes_col.bulk_write(cafes_ops)
-                    cafes_ops = []
-                if len(review_ops) >= batch_size:
-                    self.review_col.bulk_write(review_ops)
-                    review_ops = []
+                        cafes_ops.append(UpdateOne({"place_id": place_id}, {"$set": store_node}, upsert=True))
+                        counts["store"] += 1
+                        
 
-            except Exception as e:
-                logger.error(f"❌ 解析錯誤: {e}")
+                    # ==========================================
+                    # 邏輯 B：評論佐證表 (AI_embedding)
+                    # ==========================================
+                    elif doc_type == "review_level":
+                        doc_id = data.get("custom_id")
+                        review_doc = {
+                            "doc_id": doc_id,
+                            "place_id": data.get("parent_place_id", ""),
+                            "content": data.get("content", ""),
+                            "embedding": vector,
+                            "doc_type": "review_level"
+                        }
+                        review_ops.append(UpdateOne({"doc_id": doc_id}, {"$set": review_doc}, upsert=True))
+                        counts["review"] += 1
+
+                    # 批次提交
+                    if len(cafes_ops) >= batch_size:
+                        self.cafes_col.bulk_write(cafes_ops)
+                        cafes_ops = []
+                    if len(review_ops) >= batch_size:
+                        self.review_col.bulk_write(review_ops)
+                        review_ops = []
+
+                except Exception as e:
+                    logger.error(f"❌ 解析錯誤: {e}")
 
         # 提交剩餘資料
         if cafes_ops: self.cafes_col.bulk_write(cafes_ops)
         if review_ops: self.review_col.bulk_write(review_ops)
             
         logger.info(f"🎉 任務達成！成功更新主表 {counts['store']} 筆，寫入評論表 {counts['review']} 筆。")
+        if os.path.exists(local_vector_path):
+            os.remove(local_vector_path)
+            logger.info("🧹 已清除本地暫存檔案")
+
 
 if __name__ == "__main__":
     ingestor = MongoFinalIngestor(MONGO_URI, DB_NAME, PROJECT_ID, BUCKET_NAME)
