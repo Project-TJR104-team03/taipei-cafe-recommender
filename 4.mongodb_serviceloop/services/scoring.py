@@ -1,5 +1,8 @@
 # app/services/scoring.py
 import math
+from datetime import datetime, timedelta
+from geopy.distance import geodesic
+from locations import ALL_LOCATIONS
 
 def calculate_comprehensive_score(
     vec_score: float,             # 1. 向量相似度 (0.0 ~ 1.0)
@@ -17,14 +20,14 @@ def calculate_comprehensive_score(
     has_disliked_features: bool = False # 🌟 新增 10. 是否帶有使用者剛剛拒絕的特徵 (劇本二)
 ) -> float:
     """
-    計算咖啡廳推薦最終加權分數 (The 8-Dimension Scoring Formula V2)
+    計算咖啡廳推薦最終加權分數
     支援正負向行為扣分與隱性特徵懲罰
     """
 
     # ---------------------------------------------------------
-    # 維度 1~3: 綜合品質指標 (Quality)
+    # 維度 1~3: 綜合品質指標
     # ---------------------------------------------------------
-    # A. 貝氏平均靜態分數 (Bayesian Average)
+    # A. 貝氏平均靜態分數
     m = 50.0  # 信心門檻值
     bayesian_rating = ((total_reviews / (total_reviews + m)) * rating + 
                        (m / (total_reviews + m)) * global_avg_rating)
@@ -42,7 +45,7 @@ def calculate_comprehensive_score(
     score_quality = (s_static * 0.7) + (s_time * 0.3)
 
     # ---------------------------------------------------------
-    # 維度 4~5: 綜合地理指標 (Location)
+    # 維度 4~5: 綜合地理指標
     # ---------------------------------------------------------
     # A. 絕對距離衰減 (1500m 為基準)
     s_geo_abs = math.exp(-dist_meters / 1500.0)
@@ -54,12 +57,12 @@ def calculate_comprehensive_score(
     score_location = (s_geo_abs * 0.6) + (s_geo_mrt * 0.4)
 
     # ---------------------------------------------------------
-    # 🌟 維度 6~8: 行為指標 (Behavior) - 雙向平滑升級版
+    # 🌟 維度 6~8: 行為指標 - 雙向平滑升級版
     # ---------------------------------------------------------
     # 計算互動淨值 (Score_act)
     score_act = (keeps * 3.0) + (clicks * 1.0) - (dislikes * 2.0)
     
-    # 雙向正規化公式 (Bi-directional Normalization)
+    # 雙向正規化公式
     if score_act == 0:
         s_behavior = 0.0
     else:
@@ -69,12 +72,12 @@ def calculate_comprehensive_score(
         s_behavior = sign * (1.0 - math.exp(-abs(score_act) / 10.0))
 
     # ---------------------------------------------------------
-    # 維度 9: 冷啟動防護 (Cold Start)
+    # 維度 9: 冷啟動防護
     # ---------------------------------------------------------
     p_cold = 0.05 if total_reviews < 10 else 0.0
 
     # ---------------------------------------------------------
-    # 動態權重分配 (Weight Distribution)
+    # 動態權重分配
     # ---------------------------------------------------------
     if is_new_user:
         # 新使用者：依賴 AI 語意與客觀評價，不採計行為影響
@@ -91,14 +94,14 @@ def calculate_comprehensive_score(
                  p_cold
 
     # ---------------------------------------------------------
-    # 🌟 隱性特徵懲罰 (Implicit Feature Penalty - 劇本二)
+    # 🌟 隱性特徵懲罰 (劇本二)
     # ---------------------------------------------------------
     # 如果這家店帶有使用者剛剛「不給原因拒絕」的店家特徵，初步總分打 8 折
     if has_disliked_features:
         base_score *= 0.8
 
     # ---------------------------------------------------------
-    # 推薦冷卻期懲罰 (Cooldown Penalty)
+    # 推薦冷卻期懲罰 
     # ---------------------------------------------------------
     penalty = 1.0
     if last_recommended_hours < 24:
@@ -110,3 +113,125 @@ def calculate_comprehensive_score(
 
     # 確保最終分數落在 0.0 ~ 1.0 之間
     return max(0.0, min(1.0, final_score))
+
+
+# =====================================================================
+# 🌟 [新增] 推薦引擎專用的算分輔助模組 (從 recommend_service 抽離)
+# =====================================================================
+
+def get_hours_until_close(opening_hours: dict) -> float:
+    """計算距離打烊還有幾小時 (回傳浮點數，例如 1.5 小時)"""
+    if not opening_hours: return 3.0 # 沒資料預設給個安全值
+    if opening_hours.get('is_24_hours'): return 24.0
+    
+    periods = opening_hours.get('periods', [])
+    if not periods: return 3.0
+    
+    tw_now = datetime.utcnow() + timedelta(hours=8)
+    current_iso = tw_now.isoweekday()
+    current_day = 0 if current_iso == 7 else current_iso
+    current_mins = current_day * 24 * 60 + tw_now.hour * 60 + tw_now.minute
+    
+    for p in periods:
+        open_day = int(p.get('day', 0))
+        open_val = int(p.get('open', 0)) if p.get('open') is not None else 0
+        close_val = p.get('close')
+        if close_val is None: continue
+        
+        # 轉換 HHMM 為分鐘
+        def to_mins(v):
+            v = int(v)
+            if v > 1440 and v != 2359: return (v // 100) * 60 + (v % 100)
+            if v == 2359: return 1439
+            return v
+            
+        o_mins = open_day * 24 * 60 + to_mins(open_val)
+        c_day = open_day
+        if to_mins(close_val) < to_mins(open_val):
+            c_day = (open_day + 1) % 7
+            
+        c_mins = c_day * 24 * 60 + to_mins(close_val)
+        if c_mins < o_mins: c_mins += 7 * 24 * 60
+        
+        check_mins = current_mins
+        if current_mins < o_mins and (current_mins + 7 * 24 * 60) < c_mins:
+            check_mins += 7 * 24 * 60
+            
+        if o_mins <= check_mins < c_mins:
+            return (c_mins - check_mins) / 60.0 # 算出剩餘分鐘數並轉為小時
+            
+    return 0.0 # 已經打烊
+
+def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rejected_tags: list, ignore_time_penalty: bool = False) -> list:
+    """
+    統一算分漏斗：無論是哪一條路徑 (Path 0/A/B) 找出的店，
+    都必須經過這裡進行真實數據清洗與算分！
+    """
+    scored_data = []
+    
+    for item in candidates:
+        # 1. 動態計算距離 (防呆)
+        if 'dist_meters' not in item and 'location' in item and 'coordinates' in item['location']:
+            c_loc = (item['location']['coordinates'][1], item['location']['coordinates'][0])
+            item['dist_meters'] = geodesic(user_loc, c_loc).meters
+            
+        dist_meters = item.get('dist_meters', 0)
+        # 第一層硬過濾：超過 3 公里直接淘汰 (除非是精準搜尋店名)
+        if dist_meters > 3000 and item.get('match_type') != 'name': 
+            continue 
+        
+        # 2. 真實營業時間
+        if ignore_time_penalty:
+            hours_until_close = 3.0 # 如果有特殊時間需求 (深夜/未來)，直接給予滿分 3.0 小時，不扣時間分！
+        else:
+            hours_until_close = get_hours_until_close(item.get('opening_hours', {}))
+        
+        # 3. 互動數據
+        stats = item.get('stats', {})
+        clicks, keeps, dislikes = stats.get('clicks', 0), stats.get('keeps', 0), stats.get('dislikes', 0)
+        
+        # 4. 真實捷運距離計算 (搭配 locations.py 字典)
+        mrt_dist = item.get('mrt_distance', item.get('attributes', {}).get('mrt_distance'))
+        if mrt_dist is None:
+            min_mrt_dist = float('inf')
+            if 'location' in item and 'coordinates' in item['location']:
+                c_loc = (item['location']['coordinates'][1], item['location']['coordinates'][0])
+                for loc_name, loc_coords in ALL_LOCATIONS.items():
+                    if "站" in loc_name:
+                        d = geodesic(c_loc, loc_coords).meters
+                        if d < min_mrt_dist: min_mrt_dist = d
+            mrt_dist = min_mrt_dist if min_mrt_dist != float('inf') else 800.0
+            
+        # 5. 使用者狀態與避雷
+        is_new = False if user_id else True
+        has_disliked_features = False
+        if rejected_tags:
+            item_tags = [t['tag'] for t in item.get('ai_tags', [])]
+            if set(rejected_tags) & set(item_tags): has_disliked_features = True
+
+        # 6. 決定基礎語意分數
+        vec_score = item.get('vector_score', 0.8) # 預設給 0.8
+        if item.get('match_type') == 'name': vec_score = 1.0 # 店名精準命中給滿分
+        
+        # 🧠 7. 呼叫大腦算分！
+        item['search_score'] = calculate_comprehensive_score(
+            vec_score=vec_score,
+            rating=item.get('rating', 0) or 0,
+            total_reviews=item.get('total_ratings', 0),
+            dist_meters=dist_meters,
+            dist_to_nearest_mrt=mrt_dist,
+            hours_until_close=hours_until_close,
+            clicks=clicks, keeps=keeps, dislikes=dislikes,
+            is_new_user=is_new,
+            has_disliked_features=has_disliked_features
+        )
+        
+        # 👑 特權：精準店名搜尋，給予超級加分確保排在第一，但依然會被營業時間扣分！
+        if item.get('match_type') == 'name':
+            item['search_score'] += 1000.0
+            
+        scored_data.append(item)
+        
+    # 統一依照算好的分數 (search_score) 由高到低排序，並只切出前 10 名出菜！
+    scored_data.sort(key=lambda x: x.get('search_score', 0), reverse=True)
+    return scored_data[:10]

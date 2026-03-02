@@ -104,6 +104,7 @@ def get_button_reaction(tag):
     ]
     return random.choice(openings), random.choice(closings)
 
+# ✨ [完美整合版] 推薦理由濾水器與斷句系統
 def clean_summary_text(text):
     if not text: return ""
     # 1. 切割「整體而言，」只取後面的重點
@@ -113,13 +114,25 @@ def clean_summary_text(text):
     # 2. 自動過濾掉前方的「店名是一家」、「店名的」等冗長主詞 (容許範圍15字內)
     core = re.sub(r"^[^，。]{1,15}?(是一家|是|的)", "", core)
     
-    # 3. 移除結尾多餘的符號
+    # 3. 強制過濾掉括號註解 (例如：(此店較著重咖啡...))
+    core = re.sub(r"\(.*?\)|（.*?）", "", core)
+    
+    # 4. 移除結尾多餘符號
     core = core.strip(" 。-")
     
-    # 4. 限制字數，確保排版簡潔 (超過 35 字加上刪節號)
-    if len(core) > 35:
-        core = core[:33] + "..."
+    # 5. 智能斷句系統 (保證不出現 ... 且完整顯示)
+    # LINE 卡片兩行極限大約是 25~28 字。我們把防線設在 26 字。
+    if len(core) > 26:
+        # 如果超過，我們在句子前 26 個字裡面，尋找「最後一個出現的逗號或頓號」
+        last_comma = max(core.rfind("，", 0, 26), core.rfind("、", 0, 26))
         
+        # 如果有找到合適的逗號 (例如在第 15 字)，就在逗號處完美收尾！
+        if last_comma > 10: 
+            core = core[:last_comma]
+        else:
+            # 萬一 AI 寫了超過 26 個字完全沒有逗號，就只能保留前 24 字避免撐破卡片
+            core = core[:24] 
+            
     return core
 
 # --- ⭐ 星星評分組件產生器 ---
@@ -155,67 +168,96 @@ def create_star_rating_box(rating, total_reviews):
 # --- 營業時間狀態產生器 ---
 def get_opening_status(cafe_data):
     opening_hours = cafe_data.get("opening_hours")
-    
     if not opening_hours or "periods" not in opening_hours:
         return "", ""
 
     periods = opening_hours.get("periods", [])
     if not periods:
         return "", ""
+    
+    if opening_hours.get("is_24_hours", False):
+        return "24 小時營業", "#00B900"
+    
+    def parse_time(val):
+        if val is None: return None
+        v = int(val)
+        if v > 1440 and v != 2359: return (v // 100) * 60 + (v % 100)
+        if v == 2359: return 1439
+        return v
+    
+    week_periods = []
+    for p in periods:
+        open_day = int(p.get("day", 0))
+        open_time = parse_time(p.get("open", 0))
+        close_time = parse_time(p.get("close"))
+
+        if close_time is None:
+            if open_time == 0: return "24 小時營業", "#00B900"
+            continue
+            
+        start_mins = open_day * 24 * 60 + open_time
+        close_day = open_day
+        if close_time < open_time:
+            close_day = (open_day + 1) % 7
+            
+        end_mins = close_day * 24 * 60 + close_time
+        if end_mins < start_mins: end_mins += 7 * 24 * 60
+        week_periods.append([start_mins, end_mins])
+
+    # 排序並合併相連的營業時間 (例如 23:59 接著 00:00)
+    week_periods.sort(key=lambda x: x[0])
+    merged = []
+    for p in week_periods:
+        if not merged:
+            merged.append(p)
+        else:
+            last_start, last_end = merged[-1]
+            if p[0] <= last_end + 1: # 容差 1 分鐘，完美接軌
+                merged[-1][1] = max(last_end, p[1])
+            else:
+                merged.append(p)
+
+    # 處理週末跨週一的循環
+    if merged and merged[-1][1] >= 7 * 24 * 60:
+        overflow = merged[-1][1] - 7 * 24 * 60
+        if merged[0][0] <= overflow + 1:
+            merged[0][0] = merged[-1][0] - 7 * 24 * 60
+            merged[-1][1] = merged[0][1] + 7 * 24 * 60
 
     tw_now = datetime.utcnow() + timedelta(hours=8)
     current_iso = tw_now.isoweekday()
     current_day = 0 if current_iso == 7 else current_iso
-    
     current_mins = current_day * 24 * 60 + tw_now.hour * 60 + tw_now.minute
 
     min_diff = float('inf')
     next_open_info = None
     day_map = {0: "週日", 1: "週一", 2: "週二", 3: "週三", 4: "週四", 5: "週五", 6: "週六"}
 
-    for p in periods:
-        open_day = p.get("day", 0)
-        open_val = int(p.get("open", 0))
-        open_hour, open_min = open_val // 60, open_val % 60
-        start_mins = open_day * 24 * 60 + open_hour * 60 + open_min
+    for start_abs, end_abs in merged:
+        for offset in [0, -7 * 24 * 60, 7 * 24 * 60]:
+            c_mins = current_mins + offset
+            if start_abs <= c_mins < end_abs:
+                close_day = (end_abs // (24 * 60)) % 7
+                close_time = end_abs % (24 * 60)
+                close_hour, close_min = close_time // 60, close_time % 60
+                
+                if close_time >= 1439: close_str = "23:59"
+                else: close_str = f"{close_hour:02d}:{close_min:02d}"
+                    
+                if close_day != current_day:
+                    return f"營業至明日 {close_str}", "#00B900"
+                return f"營業至 {close_str}", "#00B900"
 
-        close_val = p.get("close")
-        if close_val is None:
-            if open_val == 0:
-                return "24 小時營業", "#00B900"
-            continue
-            
-        close_val = int(close_val)
-        close_hour, close_min = close_val // 60, close_val % 60
-        
-        close_day = open_day
-        if close_val < open_val:
-            close_day = (open_day + 1) % 7
-            
-        end_mins = close_day * 24 * 60 + close_hour * 60 + close_min
-        
-        if end_mins < start_mins:
-            end_mins += 7 * 24 * 60
+            diff = start_abs - c_mins
+            if 0 < diff < min_diff:
+                min_diff = diff
+                open_day = (start_abs // (24 * 60)) % 7
+                open_time = start_abs % (24 * 60)
+                open_hour, open_min = open_time // 60, open_time % 60
+                day_str = "明日" if open_day == (current_day + 1) % 7 else day_map[open_day]
+                next_open_info = f"下次營業 {day_str} {open_hour:02d}:{open_min:02d}"
 
-        check_mins = current_mins
-        if current_mins < start_mins and (current_mins + 7 * 24 * 60) < end_mins:
-            check_mins += 7 * 24 * 60
-
-        if start_mins <= check_mins < end_mins:
-            close_str = f"{close_hour:02d}:{close_min:02d}"
-            return f"營業中 · 營業至 {close_str}", "#00B900"
-
-        diff = start_mins - current_mins
-        if diff <= 0:
-            diff += 7 * 24 * 60
-            
-        if diff < min_diff:
-            min_diff = diff
-            next_open_info = f"下次營業 {day_map[open_day]} {open_hour:02d}:{open_min:02d}"
-
-    if next_open_info:
-        return next_open_info, "#f56565"
-        
+    if next_open_info: return next_open_info, "#f56565"
     return "今日未營業", "#999999"
 
 # ✨ 新增：發送 4 大主題探索卡片
@@ -290,7 +332,7 @@ def show_user_list(reply_token, user_id, list_type):
         
         contact_info = cafe.get("contact", {})
         db_map_url = contact_info.get("google_maps_url")
-        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(original_name)}"
+        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(original_name)}&query_place_id={place_id}"
         
         if list_type == "bookmarks":
             action_buttons = [
@@ -382,7 +424,7 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
         
         contact_info = cafe.get("contact", {})
         db_map_url = contact_info.get("google_maps_url")
-        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(original_name)}"
+        map_url = db_map_url if db_map_url else f"https://www.google.com/maps/search/?api=1&query={quote(original_name)}&query_place_id={place_id}"
         
         open_text, open_color = get_opening_status(cafe)
         
