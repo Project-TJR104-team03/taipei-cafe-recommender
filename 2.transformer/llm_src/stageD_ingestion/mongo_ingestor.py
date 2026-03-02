@@ -111,10 +111,9 @@ class MongoFinalIngestor:
         blob = self.bucket.blob(gcs_base_csv_path)
         content = blob.download_as_bytes()
         
-        cols = ['name', 'place_id', 'formatted_phone_number', 'formatted_address', 'website', 'location', 
-                'opening_hours', 'price_level', 'business_status', 'types', 'payment_options', 'google_maps_url']
-        df = pd.read_csv(io.BytesIO(content), names=cols, header=0, quotechar='"', encoding='utf-8-sig')
-        
+        df = pd.read_csv(io.BytesIO(content), header=0, quotechar='"', encoding='utf-8-sig')
+        logger.info(f"📊 CSV 實際包含的欄位有: {list(df.columns)}")
+
         # 轉換為 dict，方便 O(1) 尋找
         raw_store_map = {str(row['place_id']): row for _, row in df.iterrows() if pd.notna(row['place_id'])}
         return raw_store_map
