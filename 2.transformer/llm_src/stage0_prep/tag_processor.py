@@ -22,9 +22,10 @@ def normalize_tag(raw_tag_text):
             return std_name
     return raw_tag_text
 
-def process_cafe_engine(place_id, tag_series):
+def process_cafe_engine(place_id, name, tag_series):
     doc = {
         "place_id": place_id,
+        "name": name,
         "official_tags": {},
         "features": {
             "has_wifi": False, "has_plug": False, "is_work_friendly": False,
@@ -78,7 +79,7 @@ if __name__ == "__main__":
     BUCKET_NAME = os.getenv("BUCKET_NAME", "tjr104-cafe-datalake")
     
     # 輸入路徑維持 pandas gs:// 格式 (需確保有安裝 gcsfs)
-    RAW_TAGS_PATH = os.getenv("GCS_RAW_TAGS_PATH", "raw/tag/tags_total.csv")
+    RAW_TAGS_PATH = os.getenv("GCS_RAW_TAGS_PATH", "raw/tag/tags_official.csv")
     CLOUD_INPUT_PATH = f"gs://{BUCKET_NAME}/{RAW_TAGS_PATH}"
     
     # 輸出 GCS 路徑
@@ -98,7 +99,8 @@ if __name__ == "__main__":
         unmapped_meta = {}
 
         for pid, group in df.groupby('place_id'):
-            doc, unmapped = process_cafe_engine(pid, group['Tag'])
+            cafe_name = group['name'].iloc[0] if 'name' in group.columns else "Unknown"
+            doc, unmapped = process_cafe_engine(pid, cafe_name, group['Tag'])
             all_docs.append(doc)
             global_unmapped.update(unmapped.keys())
             unmapped_meta.update(unmapped)

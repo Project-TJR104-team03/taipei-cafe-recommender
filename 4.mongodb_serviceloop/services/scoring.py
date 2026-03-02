@@ -209,22 +209,28 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
             item_tags = [t['tag'] for t in item.get('ai_tags', [])]
             if set(rejected_tags) & set(item_tags): has_disliked_features = True
 
-        # 6. 決定基礎語意分數
-        vec_score = item.get('vector_score', 0.8) # 預設給 0.8
-        if item.get('match_type') == 'name': vec_score = 1.0 # 店名精準命中給滿分
-        
-        # 🧠 7. 呼叫大腦算分！
-        item['search_score'] = calculate_comprehensive_score(
-            vec_score=vec_score,
-            rating=item.get('rating', 0) or 0,
-            total_reviews=item.get('total_ratings', 0),
-            dist_meters=dist_meters,
-            dist_to_nearest_mrt=mrt_dist,
-            hours_until_close=hours_until_close,
-            clicks=clicks, keeps=keeps, dislikes=dislikes,
-            is_new_user=is_new,
-            has_disliked_features=has_disliked_features
-        )
+        # 6. 分流算分：判斷是「指定店名」還是「AI 推薦」
+        if item.get('match_type') == 'name':
+            
+            # 如果因為特殊要求 (如找半夜) 發動了免死金牌，或者目前有營業，給予營業加分
+            open_bonus = 500.0 if hours_until_close > 0 else 0.0 
+            
+            item['search_score'] = 1000.0 - (dist_meters / 10.0) + open_bonus
+            
+        else:
+            # 🧠 正常 AI 推薦漏斗 (Path A / B 專屬)：
+            # 乖乖跑 8 維度綜合評估大腦
+            item['search_score'] = calculate_comprehensive_score(
+                vec_score=item.get('vector_score', 0.8),
+                rating=item.get('rating', 0) or 0,
+                total_reviews=item.get('total_ratings', 0),
+                dist_meters=dist_meters,
+                dist_to_nearest_mrt=mrt_dist,
+                hours_until_close=hours_until_close,
+                clicks=clicks, keeps=keeps, dislikes=dislikes,
+                is_new_user=is_new,
+                has_disliked_features=has_disliked_features
+            )        
         
         # 👑 特權：精準店名搜尋，給予超級加分確保排在第一，但依然會被營業時間扣分！
         if item.get('match_type') == 'name':
