@@ -182,13 +182,15 @@ class MongoFinalIngestor:
 
 
                 try:
-                    vector = data.get("embedding")
+                    vector = data.get("embedding_1536") or data.get("embedding")
                     if not vector:
                         # 如果是從 Vertex AI 產出的原始 JSONL，向量可能在 response.predictions[0].embeddings.values
                         # 這裡根據你解析後的內容調整
                         vector = data.get("response", {}).get("predictions", [{}])[0].get("embeddings", {}).get("values")
                     
-                    if not vector: continue
+                    if not vector: 
+                        logger.warning(f"⚠️ [第 {line_num} 行] 找不到向量資料，已跳過。")
+                        continue
 
                     doc_type = data.get("doc_type")
                         
