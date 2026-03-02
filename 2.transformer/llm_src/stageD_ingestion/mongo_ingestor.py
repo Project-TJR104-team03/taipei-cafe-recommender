@@ -175,7 +175,7 @@ class MongoFinalIngestor:
         counts = {"store": 0, "review": 0}
 
         review_counts = {} 
-        MAX_REVIEWS_PER_CAFE = os.getenv("MAX_REVIEWS_PER_CAFE", "5") #評論上限
+        MAX_REVIEWS_PER_CAFE = int(os.getenv("MAX_REVIEWS_PER_CAFE", 5)) #評論上限
 
         local_vector_path = f"/tmp/vector_read_{int(time.time())}.jsonl"
         logger.info(f"📥 正在將巨型向量檔下載至本地暫存區: {local_vector_path} ...")
