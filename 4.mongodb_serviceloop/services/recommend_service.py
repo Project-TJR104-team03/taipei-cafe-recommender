@@ -190,6 +190,7 @@ class RecommendService:
             # === 2. AI 意圖分析 (時間過濾) ===
             filter_open_now = False
             target_datetime = None
+            ai_intent = {}
             
             if user_query: # 注意：這裡依然傳入完整的 user_query 給 AI，讓 AI 知道完整情境
                 ai_intent = self.intent_agent.analyze_user_intent(user_query)
@@ -269,28 +270,60 @@ class RecommendService:
 
             # === Path 0: 店名精準直達車 ===
             if search_query:
-                logger.info(f"🔎 [Path 0] 檢查是否為特定店家名稱: '{search_query}'")
-                name_pipeline = [
-                    {"$geoNear": {
-                        "near": {"type": "Point", "coordinates": [current_search_lng, current_search_lat]},
-                        "distanceField": "dist_meters", "maxDistance": 50000, "spherical": True 
-                    }},
-                    {"$match": {"$or": [
-                        {"final_name": {"$regex": search_query, "$options": "i"}},
-                        {"original_name": {"$regex": search_query, "$options": "i"}}
-                    ]}}
-                ]
-                if blacklist_ids: name_pipeline.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
-                name_pipeline.append({"$limit": 5})
+                import re # 確保引入正則表達式模組
                 
-                name_results = list(db['cafes'].aggregate(name_pipeline))
-                name_results = filter_by_opening_hours(name_results)
+                search_names = [search_query]
                 
-                if name_results:
-                    logger.info(f"🎯 [Path 0] 精準命中店家: {len(name_results)} 家")
-                    for item in name_results: 
-                        item['match_type'] = 'name' # 📌 貼上標籤：我是靠店名找出來的
-                    final_candidates = name_results
+                # 🌟 [神級進化 1：碎紙機還原術]
+                if ai_intent and ai_intent.get("extracted_keywords"):
+                    extracted = ai_intent["extracted_keywords"]
+                    reconstructed = " ".join(extracted)
+                    
+                    # 判斷：如果 AI 切出來的詞，組裝起來剛好是原句的一部分 (例如 always day one)
+                    # 代表 AI 只是把英文切碎了，我們不要把碎片加進去，只保留組裝好的完整字串！
+                    if len(extracted) > 1 and reconstructed.lower() in search_query.lower():
+                        search_names.append(reconstructed)
+                    else:
+                        # 如果不是 (例如：["星巴克", "路易莎"])，代表是多個獨立店名，全部加進去
+                        search_names.extend(extracted)
+                
+                # 去除重複的搜尋詞
+                search_names = list(set(search_names))
+                logger.info(f"🔎 [Path 0] 準備比對這些可能店名: {search_names}")
+                
+                # 🌟 [神級進化 2：模糊比對正則魔法]
+                name_or_conditions = []
+                for n in search_names:
+                    clean_n = n.strip()
+                    if len(clean_n) >= 2: # 防呆：避免拿單一個字去亂找全資料庫
+                        # A. 原始精準比對
+                        name_or_conditions.append({"final_name": {"$regex": f"^{clean_n}$", "$options": "i"}})
+                        name_or_conditions.append({"original_name": {"$regex": f"^{clean_n}$", "$options": "i"}})
+                        
+                        # B. 模糊容錯比對 (把空白和符號都變成 .* 來忽略它們)
+                        fuzzy_pattern = ".*".join(re.split(r'[\s\-]+', clean_n))
+                        name_or_conditions.append({"final_name": {"$regex": fuzzy_pattern, "$options": "i"}})
+                        name_or_conditions.append({"original_name": {"$regex": fuzzy_pattern, "$options": "i"}})
+                
+                if name_or_conditions:
+                    name_pipeline = [
+                        {"$geoNear": {
+                            "near": {"type": "Point", "coordinates": [current_search_lng, current_search_lat]},
+                            "distanceField": "dist_meters", "maxDistance": 50000, "spherical": True 
+                        }},
+                        {"$match": {"$or": name_or_conditions}}
+                    ]
+                    if blacklist_ids: name_pipeline.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
+                    name_pipeline.append({"$limit": 5})
+                    
+                    name_results = list(db['cafes'].aggregate(name_pipeline))
+                    # 🛡️ 絕對豁免權：精準搜店名時，就算現在沒開也要顯示！(拿掉時間過濾)
+                    
+                    if name_results:
+                        logger.info(f"🎯 [Path 0] 精準命中店家: {len(name_results)} 家")
+                        for item in name_results: 
+                            item['match_type'] = 'name' 
+                        final_candidates = name_results
 
             # === Path A: 向量搜尋 (雙引擎並行架構) ===
             if search_query and not final_candidates:
