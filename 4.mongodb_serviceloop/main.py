@@ -260,51 +260,33 @@ def get_opening_status(cafe_data):
     if next_open_info: return next_open_info, "#f56565"
     return "今日未營業", "#999999"
 
-# ✨ 新增：發送 4 大主題探索卡片
+# ✨ 修改：發送 4 大情境懶人包卡片
 def send_explore_categories(reply_token):
-    def create_card(title, img_url, buttons_data):
-        buttons = []
-        for btn in buttons_data:
-            buttons.append({
-                "type": "button", "style": "secondary", "color": "#FFFFFF", "cornerRadius": "md", "paddingAll": "8px", "margin": "sm",
-                "action": {"type": "postback", "label": btn["label"], "data": f"action=quick_tag&tag={btn['tag']}"},
-                "contents": [{"type": "text", "text": btn["label"], "color": "#020201", "size": "sm", "weight": "bold", "align": "center"}]
-            })
+    def create_theme_card(title, img_url, theme_val):
         return {
             "type": "bubble", "size": "kilo", 
-            "styles": {"body": {"backgroundColor": "#FAF3E8"}},
             "body": {
-                "type": "box", "layout": "vertical", "paddingAll": "12px", 
+                "type": "box", "layout": "vertical", "paddingAll": "0px", 
+                "action": {"type": "postback", "data": f"action=theme_search&theme={theme_val}"},
                 "contents": [
-                    {"type": "box", "layout": "vertical", "alignItems": "center",
-                        "contents": [
-                            {"type": "image", "url": img_url, "size": "lg", "aspectMode": "fit"},
-                            {"type": "text", "text": title, "weight": "bold", "size": "sm", "color": "#333333", "margin": "md"}]},
-                    {"type": "separator", "color": "#E6D5C3", "margin": "sm"},
-                    {"type": "box", "layout": "vertical", "margin": "md", "spacing": "sm", "contents": buttons}
-                ]}}
+                    {"type": "image", "url": img_url, "size": "full", "aspectMode": "cover", "aspectRatio": "4:3"},
+                    {
+                        "type": "box", "layout": "vertical", "position": "absolute", "backgroundColor": "#00000066", 
+                        "width": "100%", "height": "100%", "alignItems": "center", "justifyContent": "center",
+                        "contents": [{"type": "text", "text": title, "color": "#ffffff", "weight": "bold", "size": "lg"}]
+                    }
+                ]
+            }
+        }
 
     bubbles = [
-        create_card("生產力與空間", "https://cdn-icons-png.flaticon.com/512/5956/5956592.png", [
-            {"label": "⏳ 不限時", "tag": "絕對不限時"},
-            {"label": "🔌 有插座", "tag": "插座筆電族"},
-            {"label": "📖 適合讀書", "tag": "安靜好讀書"}
-        ]),
-        create_card("視覺與氛圍", "https://cdn-icons-png.flaticon.com/512/3221/3221545.png", [
-            {"label": "🕰️ 老宅風", "tag": "復古老宅風"},
-            {"label": "🎨 文青風", "tag": "質感文青風"},
-            {"label": "🏭 工業風", "tag": "個性工業風"}
-        ]),
-        create_card("餐飲特色", "https://cdn-icons-png.flaticon.com/512/3413/3413580.png", [
-            {"label": "🍰 吃甜點", "tag": "甜點下午茶"},
-            {"label": "☕ 喝手沖", "tag": "職人手沖店"}
-        ]),
-        create_card("特殊情境", "https://cdn-icons-png.flaticon.com/512/3504/3504865.png", [
-            {"label": "🌙 開到深夜", "tag": "深夜夜貓族"},
-            {"label": "🐾 寵物友善", "tag": "有毛孩療癒"}
-        ])]
+        create_theme_card("💻 適合辦公", "https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=500", "workspace"),
+        create_theme_card("🍷 質感約會", "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=500", "dating"),
+        create_theme_card("🐾 毛孩同樂", "https://images.unsplash.com/photo-1543852786-1cf6624b9987?w=500", "pet_friendly"),
+        create_theme_card("🎧 獨處放鬆", "https://images.unsplash.com/photo-1445116572660-236099ec97a0?w=500", "relax")
+    ]
 
-    flex_message = FlexSendMessage(alt_text="探索主題咖啡廳", contents={"type": "carousel", "contents": bubbles})
+    flex_message = FlexSendMessage(alt_text="四大情境探索", contents={"type": "carousel", "contents": bubbles})
     line_bot_api.reply_message(reply_token, flex_message)
 
 # ✨ 顯示「我的收藏」或「我的黑名單」卡片
@@ -376,13 +358,14 @@ def show_user_list(reply_token, user_id, list_type):
     line_bot_api.reply_message(reply_token, flex_message)
 
 # --- 核心搜尋流程 ---
-async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_query=None, opening=None, closing=None, rejected_place_id=None, negative_reason=None):
+async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_query=None, opening=None, closing=None, rejected_place_id=None, negative_reason=None, theme=None):
    result = await recommend_service.recommend(
         lat=lat, lng=lng, user_id=user_id, 
         user_query=user_query, 
         cafe_tag=tag,
         rejected_place_id=rejected_place_id,
-        negative_reason=negative_reason
+        negative_reason=negative_reason,
+        theme=theme
     )
    cafe_list = result.get("data", [])
 
@@ -444,10 +427,10 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
             info_box_contents.append(
                 {
                     "type": "text", 
-                    "text": " · ".join(display_tags), # 用間隔號串接 (如: 🔌 插座 · 🌙 深夜)
+                    "text": f"🏷️ {' · '.join(display_tags)}", # 🚀 統一在最前面加上一個俐落的標籤符號！
                     "size": "xs", 
                     "color": "#888888", 
-                    "wrap": True, # 開啟換行，維持排版穩定
+                    "wrap": True, 
                     "margin": "sm"
                 }
             )
@@ -666,6 +649,18 @@ def handle_postback(event):
         send_explore_categories(event.reply_token)
         return
     
+    # ✨ 新增：處理情境懶人包的點擊
+    if action == "theme_search":
+        theme = params.get('theme')
+        theme_names = {"workspace": "適合辦公", "dating": "質感約會", "pet_friendly": "毛孩同樂", "relax": "獨處放鬆"}
+        
+        if loc:
+            op_msg = f"收到！馬上為您尋找最高分的「{theme_names.get(theme, '專屬')}」神店... 🚀"
+            asyncio.create_task(process_recommendation(event.reply_token, lat, lng, user_id=user_id, theme=theme, opening=op_msg))
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📍 請先分享位置，我才能幫您找附近的店喔！", quick_reply=get_standard_quick_reply()))
+        return
+
     if action == "quick_tag":
         ui_tag = params.get('tag')
         mapped_tag = MACRO_TAG_MAPPING.get(ui_tag, ui_tag)
