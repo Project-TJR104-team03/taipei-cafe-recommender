@@ -121,11 +121,12 @@ class RecommendService:
                 ai_intent = self.intent_agent.analyze_user_intent(user_query)
                 # logger.info(f"🧠 AI 意圖分析結果: {ai_intent}")
                 
-                if ai_intent and "time_filter" in ai_intent:
-                    tf = ai_intent["time_filter"]
-                    filter_open_now = tf.get("filter_open_now", filter_open_now)
-                    target_datetime = tf.get("target_iso_datetime", target_datetime)
-                    logger.info(f"🕒 AI 判定時間條件 -> 現在營業: {filter_open_now}, 指定時間: {target_datetime}")
+                if ai_intent and ai_intent.get("has_time"):
+                    target_datetime = ai_intent.get("target_time")
+                    filter_open_now = False # 既然有指定未來時間，就不該強制要求「現在」有營業
+                    logger.info(f"🕒 AI 判定明確時間條件: {target_datetime}")
+                else:
+                    logger.info("🕒 AI 判定沒有指定特定時間。")
 
             # 🌟 [新增] 深夜特權：如果是在找深夜咖啡廳，強制關閉營業時間過濾！
             is_midnight_search = False
@@ -357,7 +358,7 @@ class RecommendService:
                 ignore_time = is_midnight_search or (target_datetime is not None)
                 final_data = process_and_score_cafes(
                     candidates=final_candidates,
-                    user_loc=user_loc,
+                    user_loc=(current_search_lat, current_search_lng),
                     user_id=user_id,
                     rejected_tags=rejected_tags,
                     ignore_time_penalty=ignore_time
@@ -408,12 +409,7 @@ class RecommendService:
                     logger.error(f"⚠️ AI 生成理由失敗，將自動退回預設文字: {e}")
             else:
                 logger.info("⚡ [智能分流] 點擊情境按鈕或無複雜需求，跳過 AI 生成以確保極速體驗！")
-            
-
-            ai_reasons = {}
-            if search_query and final_data:
-                ai_reasons = await self.reason_agent.generate_reasons_batch(search_query, final_data)
-                
+ 
             # === 格式化輸出 ===
             formatted_response = []
             for r in final_data:
