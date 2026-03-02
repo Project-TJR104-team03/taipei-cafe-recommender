@@ -10,6 +10,7 @@ from database import db_client
 from utils import is_google_period_open
 from locations import ALL_LOCATIONS
 from agents.intent_agent import IntentAgent
+from agents.reason_agent import ReasonAgent
 from google import genai 
 from services.scoring import process_and_score_cafes
 from constants import TAG_EMOJI_MAP
@@ -20,6 +21,7 @@ logger = logging.getLogger("Coffee_Recommender")
 class RecommendService:
     def __init__(self, api_key: str):
         self.intent_agent = IntentAgent()
+        self.reason_agent = ReasonAgent()
         if api_key:
             self.client = genai.Client(api_key=api_key)
         else:
@@ -46,84 +48,6 @@ class RecommendService:
         except Exception as e:
             logger.error(f"❌ Embedding Error: {e}")
             return None
-        
-    # ✨ [完美整合版]：優先抓取 matched_review 網友評論，並包含 15-20 字數限制與格式防呆
-    def _generate_reasons_batch(self, user_query: str, cafes: list) -> dict:
-        """根據使用者需求，一次性請 AI 從各家店的 review / summary 中萃取「一句話推薦理由」"""
-        if not user_query or not self.intent_agent.model:
-            return {}
-        
-        cafe_info_list = []
-        for c in cafes:
-            # 優先抓取 Path A 找出來的超神準「網友評論 (matched_review)」
-            info = c.get("matched_review", "") 
-            
-            # 如果是 Path B 找出來的店，沒有 matched_review，才退而求其次用 summary
-            if not info:
-                info = c.get("summary", c.get("scores", {}).get("summary", ""))
-            
-            # 一樣把標籤抓出來給 AI 當作保底的發揮素材
-            tags = c.get("tags", [])
-            if not tags and "ai_tags" in c:
-                tags = [t.get("tag", "") for t in c.get("ai_tags", []) if isinstance(t, dict)]
-            
-            cafe_info_list.append({
-                "id": str(c.get("place_id", c.get("_id"))),
-                "tags": tags[:5], 
-                "info": info[:250] # 評論可能稍微長一點，放寬到 250 字
-            })
-            
-        prompt = f"""
-        【任務】
-        你是一位熱情且專業的咖啡廳推薦專家。
-        使用者目前的搜尋需求為：「{user_query}」
-        名單上的咖啡廳「已經確定符合」此需求。請根據資料中的 tags 與 info (可能為網友真實評論或店家介紹)，為每家店寫出「一句話的專屬正面推薦理由」。
-
-        【資料】
-        {json.dumps(cafe_info_list, ensure_ascii=False)}
-
-        【輸出規定】
-        1. 必須是「正面、肯定」的推銷語氣。如果 info 是網友評論，請將其修飾為推薦口吻 (例如：可以寫「網友大推這裡的甜點...」或直接描述優點)。如果 info 沒提到需求，請利用 tags 造句。
-        2. ⚠️ 絕對禁止出現「資訊較少」、「未提及」、「無相關資訊」、「偏重咖啡」等任何帶有否定、抱歉或不確定的字眼！
-        3. 語氣自然，絕對不要出現「整體而言」、「這是一家」等廢言。
-        4. ⚠️ 字數嚴格限制在 15 到 20 字以內！必須是一句「完整結束」的精華短句，不要使用括號 () 備註。
-        5. ⚠️ 必須回傳單一的 JSON Object (字典) 格式，絕對不要回傳 List (陣列)！格式範例如下：
-        {{
-            "698d8e027c3379e16ae78f76": "營業至深夜，且提供插座適合辦公",
-            "另一個店家ID": "如同網友推薦，這裡提供多樣美味甜點"
-        }}
-        """
-        try:
-            response = self.intent_agent.model.generate_content(
-                prompt,
-                generation_config=GenerationConfig(response_mime_type="application/json", temperature=0.2)
-            )
-            clean_text = response.text.replace("```json", "").replace("```", "").strip()
-            parsed_data = json.loads(clean_text)
-            
-            # 🛡️ 防呆機制保留，避免 AI 壞掉
-            if isinstance(parsed_data, list):
-                logger.warning("⚠️ AI 回傳了 List 格式，正在自動修正為 Dict...")
-                fixed_dict = {}
-                for item in parsed_data:
-                    if isinstance(item, dict):
-                        # 情況A: [{"id": "123", "reason": "abc"}]
-                        if "id" in item and "reason" in item:
-                            fixed_dict[item["id"]] = item["reason"]
-                        # 情況B: [{"123": "abc"}, {"456": "def"}]
-                        else:
-                            fixed_dict.update(item)
-                return fixed_dict
-            
-            # 如果本來就是乖乖回傳 Dict，就直接給過
-            elif isinstance(parsed_data, dict):
-                return parsed_data
-            else:
-                return {}
-                
-        except Exception as e:
-            logger.error(f"❌ 批量生成推薦理由失敗: {e}")
-            return {}
     
     async def recommend(self, lat: float, lng: float, user_id: str = None, 
                         user_query: str = None, cafe_tag: str = None,
@@ -194,7 +118,7 @@ class RecommendService:
             
             if user_query: # 注意：這裡依然傳入完整的 user_query 給 AI，讓 AI 知道完整情境
                 ai_intent = self.intent_agent.analyze_user_intent(user_query)
-                logger.info(f"🧠 AI 意圖分析結果: {ai_intent}")
+                # logger.info(f"🧠 AI 意圖分析結果: {ai_intent}")
                 
                 if ai_intent and "time_filter" in ai_intent:
                     tf = ai_intent["time_filter"]
@@ -291,11 +215,21 @@ class RecommendService:
                 search_names = list(set(search_names))
                 logger.info(f"🔎 [Path 0] 準備比對這些可能店名: {search_names}")
                 
+                # 去除重複的搜尋詞
+                search_names = list(set(search_names))
+                
+                # 🛡️ [神級防呆 3：氾濫單字黑名單]
+                # 避免 AI 萃取出太通用的詞（例如只抓出 "cafe"），導致撈出全台北的店
+                forbidden_exact_words = {"cafe", "coffee", "咖啡", "咖啡廳", "咖啡店", "店名", "餐廳", "推薦", "附近", "台北"}
+                
+                logger.info(f"🔎 [Path 0] 準備比對這些可能店名: {search_names}")
+                
                 # 🌟 [神級進化 2：模糊比對正則魔法]
                 name_or_conditions = []
                 for n in search_names:
                     clean_n = n.strip()
-                    if len(clean_n) >= 2: # 防呆：避免拿單一個字去亂找全資料庫
+                    # 只有當它大於等於 2 個字，且「不屬於氾濫單字」時，才允許拿去搜店名！
+                    if len(clean_n) >= 2 and clean_n.lower() not in forbidden_exact_words: 
                         # A. 原始精準比對
                         name_or_conditions.append({"final_name": {"$regex": f"^{clean_n}$", "$options": "i"}})
                         name_or_conditions.append({"original_name": {"$regex": f"^{clean_n}$", "$options": "i"}})
@@ -452,12 +386,18 @@ class RecommendService:
                 return [TAG_EMOJI_MAP.get(t, t) for t in sorted_tags]
             
             # === 🔥 [新增] 根據使用者需求，讓 AI 動態生成客製化推薦理由 ===
+            # 5. [AI 客製化推薦理由] 如果有明確需求，批次請 AI 生成一句話理由
             target_req = search_query if search_query else cafe_tag
             personalized_reasons = {}
-            if target_req and final_data:
+            if target_req:
                 logger.info(f"🧠 [AI 客製化理由] 正在為推薦清單生成專屬理由 (需求: {target_req})...")
-                personalized_reasons = self._generate_reasons_batch(target_req, final_data)
+                # ✨ 改成呼叫外包出去的 ReasonAgent，並且記得加上 await
+                personalized_reasons = await self.reason_agent.generate_reasons_batch(target_req, final_data)
 
+            ai_reasons = {}
+            if search_query and final_data:
+                ai_reasons = await self.reason_agent.generate_reasons_batch(search_query, final_data)
+                
             # === 格式化輸出 ===
             formatted_response = []
             for r in final_data:
