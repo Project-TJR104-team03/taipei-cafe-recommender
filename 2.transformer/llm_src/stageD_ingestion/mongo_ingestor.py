@@ -268,6 +268,7 @@ class MongoFinalIngestor:
                     # 邏輯 B：評論佐證表 (AI_embedding)
                     # ==========================================
                     elif doc_type == "review_level":
+                        continue
                         doc_id = data.get("custom_id")
                         review_doc = {
                             "doc_id": doc_id,
