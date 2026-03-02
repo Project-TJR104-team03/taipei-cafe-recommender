@@ -23,6 +23,9 @@ BUCKET_NAME = os.getenv("BUCKET_NAME")
 GCS_RAW_STORE_PATH = os.getenv("GCS_RAW_STORE_PATH")
 GCS_EMBEDDING_RESULTS_FOLDER = os.getenv("GCS_EMBEDDING_RESULTS_FOLDER") # 指向 Vertex AI 產出的母目錄
 GCS_SCORED_FILE_PATH = os.getenv("GCS_FINAL_SCORED_PATH") # 指向 Stage B 的產出
+GCS_NAME_CLEAN_PATH = os.getenv("GCS_NAME_CLEAN_PATH", "transform/stage0/name_clean_finished.csv")
+GCS_STORE_DYNAMIC_PATH = os.getenv("GCS_STORE_DYNAMIC_PATH", "raw/store_dynamic/store_dynamic.csv")
+
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -30,6 +33,7 @@ logger = logging.getLogger(__name__)
 # ==========================================
 # 輔助函數 (來自原 store_to_db.py)
 # ==========================================
+
 def extract_area_info(address):
     """提取地區資訊，對應實測的 formatted_address"""
     if pd.isna(address):
@@ -118,6 +122,23 @@ class MongoFinalIngestor:
         raw_store_map = {str(row['place_id']): row for _, row in df.iterrows() if pd.notna(row['place_id'])}
         return raw_store_map
     
+    def _load_csv_to_map(self, gcs_path):
+        """萬用 CSV 載入器：讀取 GCS 上的 CSV，並轉為以 place_id 為 Key 的字典"""
+        logger.info(f"📂 正在載入附加資料表: {gcs_path}")
+        blob = self.bucket.blob(gcs_path)
+        
+        if not blob.exists():
+            logger.warning(f"⚠️ 找不到附加資料表 {gcs_path}，將回傳空字典。")
+            return {}
+            
+        content = blob.download_as_bytes()
+        # 信任 CSV 本身的 Header，不強制覆寫 names
+        df = pd.read_csv(io.BytesIO(content), header=0, quotechar='"', encoding='utf-8-sig')
+        
+        # 轉為 O(1) 尋找的 Hash Map
+        return {str(row['place_id']): row for _, row in df.iterrows() if pd.notna(row.get('place_id'))}
+
+
     def process_and_upload(self, gcs_base_csv_path, gcs_vector_folder, gcs_scored_path):
         """
         從 GCS 讀取資料並匯入 MongoDB
@@ -142,6 +163,8 @@ class MongoFinalIngestor:
         # 3. 載入原始物理資料 (Base CSV)
         try:
             raw_store_map = self._load_base_csv_to_map(gcs_base_csv_path)
+            name_clean_map = self._load_csv_to_map(GCS_NAME_CLEAN_PATH)
+            dynamic_map = self._load_csv_to_map(GCS_STORE_DYNAMIC_PATH)
         except Exception as e:
             logger.error(f"❌ 讀取基礎 CSV 失敗: {e}")
             return
@@ -150,6 +173,9 @@ class MongoFinalIngestor:
         review_ops = []
         batch_size = 500
         counts = {"store": 0, "review": 0}
+
+        review_counts = {} 
+        MAX_REVIEWS_PER_CAFE = os.getenv("MAX_REVIEWS_PER_CAFE", "5") #評論上限
 
         local_vector_path = f"/tmp/vector_read_{int(time.time())}.jsonl"
         logger.info(f"📥 正在將巨型向量檔下載至本地暫存區: {local_vector_path} ...")
@@ -204,6 +230,8 @@ class MongoFinalIngestor:
                         ai_data = scored_data_map.get(place_id, {})
                         meta_filter = ai_data.get("metadata_for_filtering", {})
                         phys_data = raw_store_map.get(place_id, pd.Series())
+                        clean_data = name_clean_map.get(place_id, pd.Series())
+                        dyn_data = dynamic_map.get(place_id, pd.Series())
 
                         # 解析 Types 邏輯 (來自 store_to_db)
                         raw_types = phys_data.get('types')
@@ -226,11 +254,19 @@ class MongoFinalIngestor:
                             "coordinates": coords
                         } if coords[0] is not None else None
 
+                        rating_val = dyn_data.get('rating')
+                        review_count = dyn_data.get('user_ratings_total')
 
                         # --- 組裝終極版 Schema (對齊 v1.2) ---
                         store_node = {
                             "place_id": place_id,
                             "original_name": str(phys_data.get('name', ai_data.get('place_name'))),
+                            "final_name": str(clean_data.get('final_name')) if pd.notna(clean_data.get('final_name')) else str(phys_data.get('name')),
+                            "branch": str(clean_data.get('branch_y')) if pd.notna(clean_data.get('branch_y')) else "0",
+                            "ratings": {
+                                "rating": float(rating_val) if pd.notna(rating_val) else 0.0,
+                                "review_amount": int(review_count) if pd.notna(review_count) else 0
+                            },
                             "location": location_dict,
                             "area_info": extract_area_info(phys_data.get('formatted_address')),
                             "attributes": {
@@ -267,7 +303,14 @@ class MongoFinalIngestor:
                     # 邏輯 B：評論佐證表 (AI_embedding)
                     # ==========================================
                     elif doc_type == "review_level":
-                        continue
+                        parent_place_id = data.get("parent_place_id")
+                        if not parent_place_id:
+                            continue
+                        current_count = review_counts.get(parent_place_id, 0)
+                        if current_count >= MAX_REVIEWS_PER_CAFE:
+                            continue # 滿額了！無情略過，拯救資料庫空間
+                        
+                        review_counts[parent_place_id] = current_count + 1
                         doc_id = data.get("custom_id")
                         review_doc = {
                             "doc_id": doc_id,
