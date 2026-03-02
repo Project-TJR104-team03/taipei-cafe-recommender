@@ -41,7 +41,7 @@ class IntentAgent(BaseAgent):
             if response.text:
                 clean_text = response.text.replace("```json", "").replace("```", "").strip()
                 result = json.loads(clean_text)
-                logger.info(f"🤖 [Vertex AI 分析結果]: {json.dumps(result, ensure_ascii=False)}")
+                # logger.info(f"🤖 [Vertex AI 分析結果]: {json.dumps(result, ensure_ascii=False)}")
                 return result
             return {}
 

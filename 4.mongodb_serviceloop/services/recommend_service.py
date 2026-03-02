@@ -194,7 +194,7 @@ class RecommendService:
             
             if user_query: # 注意：這裡依然傳入完整的 user_query 給 AI，讓 AI 知道完整情境
                 ai_intent = self.intent_agent.analyze_user_intent(user_query)
-                logger.info(f"🧠 AI 意圖分析結果: {ai_intent}")
+                # logger.info(f"🧠 AI 意圖分析結果: {ai_intent}")
                 
                 if ai_intent and "time_filter" in ai_intent:
                     tf = ai_intent["time_filter"]

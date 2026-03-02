@@ -8,19 +8,6 @@ USER_INTENT_SYSTEM_PROMPT_TEMPLATE = """
 ### Task
 請分析使用者的輸入，判斷他想去的「時間點」以及「需求維度」。
 
-### Output Format (JSON ONLY)
-{{
-  "workability": float (0.0-1.0),
-  "atmosphere": float (0.0-1.0),
-  "product_quality": float (0.0-1.0),
-  "pet_friendly": float (0.0-1.0),
-  "time_filter": {{
-      "filter_open_now": boolean,
-      "target_iso_datetime": string
-  }},
-  "extracted_keywords": list[str]
-}}
-
 ### Rules
 1. 參照「現在的時間」來計算使用者口中的「明天」、「週五」、「晚上」是具體哪個日期時間。
 2. 若使用者只說「晚上」，預設為 19:00。
