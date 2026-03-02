@@ -158,3 +158,80 @@ CONTRADICTION_PAIRS = {
         "negative": "stuffy"    # 悶熱
     }
 }
+
+# --- 新增區塊：懶人按鈕場景權重配置 (Scenario Weighting Matrix) ---
+SCENARIO_CONFIG = {
+    "適合辦公": {
+        "positive_features": {
+            "has_plug": 0.35,            
+            "time_flexibility_score": 0.25,  # 使用收斂後的分數
+            "has_wifi": 0.20,            
+            "is_work_friendly": 0.15,    
+            "is_quiet": 0.05             
+        },
+        "negative_features": {} # 限時與否已經包在 flexibility_score 裡了，不需重複扣分
+    },
+    "質感約會": {
+        "positive_features": {
+            "has_dessert": 0.30,         
+            "service_quality_score": 0.25,   # 使用收斂後的服務分數
+            "hipster_style": 0.15,       
+            "retro": 0.15,               
+            "is_old_house": 0.10,        
+            "can_reserve": 0.05          
+        },
+        "negative_features": {}
+    },
+    "毛孩同樂": {
+        "positive_features": {
+            "is_pet_friendly": 0.5,      
+            "has_shop_cat": 0.2,         
+            "has_shop_dog": 0.2,         
+            "has_outdoor_seating": 0.1   
+        },
+        "negative_features": {
+            "is_quiet": -0.1             
+        }
+    },
+    "獨處放鬆": {
+        "positive_features": {
+            "is_quiet": 0.4,             
+            "service_quality_score": 0.2,    
+            "time_flexibility_score": 0.2,   
+            "is_specialty_coffee": 0.2   
+        },
+        "negative_features": {
+            "is_good_for_groups": -0.3  
+        }
+    }
+}
+
+# --- 新增區塊：展示層英轉中字典 (Presentation Layer Mapping) ---
+# 用於將特徵分數的英文字段，轉換為前端 UI 顯示的驚喜標籤
+FEATURE_TO_ZH = {
+    # 原始特徵
+    "has_wifi": "Wi-Fi", "has_plug": "插座", "is_work_friendly": "工作友善",
+    "time_limit_free": "不限時", "is_midnight": "深夜", "is_quiet": "安靜",
+    "has_dessert": "甜點好吃", "is_vegetarian_friendly": "素食友善", "has_meal": "提供鹹食",
+    "is_specialty_coffee": "手沖精品", "has_alcohol": "提供酒精",
+    "accept_mobile_payment": "電子支付", "accept_credit_card": "可刷卡", "is_cash_only": "只收現金",
+    "has_restroom": "有洗手間", "is_lgbtq_friendly": "性別友善",
+    "is_smoke_free": "全面禁菸", "has_smoking_area": "吸菸區",
+    "parking_easy": "停車方便", "parking_difficult": "停車困難", "has_drive_thru": "免下車服務",
+    "has_live_performance": "現場表演", "has_delivery": "外送服務", "has_paid_parking": "收費停車",
+    "has_outdoor_seating": "戶外座位", "is_pet_friendly": "寵物友善", "is_child_friendly": "兒童友善",
+    "can_reserve": "可預約", "is_good_for_groups": "適合團體", "has_accessibility": "無障礙空間",
+    "has_minimum_charge": "有低消", "is_oat_milk_available": "提供燕麥奶", "is_old_house": "老宅改建",
+    "has_service_fee": "收服務費", "has_time_limit": "有用餐限時", "is_japanese_style": "日式風格",
+    "is_korean_style": "韓系風格", "is_service_slow": "出餐較慢", "has_shop_dog": "有店狗",
+    "has_shop_cat": "有店貓", "retro": "復古風", "is_cold": "冷氣很強", "service_fee_free": "免服務費",
+    "good_service": "服務親切", "bad_service": "服務不佳", "has_industrial_design": "工業風",
+    "hipster_style": "文青風", "stuffy": "環境悶熱",
+    
+    # 收斂後的綜合指標
+    "service_quality_score": "服務極佳",
+    "time_flexibility_score": "時間彈性",
+    "parking_convenience_score": "停車便利",
+    "fee_transparency_score": "價格透明",
+    "temperature_comfort_score": "空調舒適"
+}
