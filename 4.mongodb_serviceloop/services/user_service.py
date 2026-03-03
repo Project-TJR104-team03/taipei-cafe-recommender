@@ -67,8 +67,8 @@ class UserService:
         db['interaction_logs'].insert_one(doc)
         logger.info(f"📝 [User Log] Action={action}, User={user_id}, Place={place_id}, Reason={reason}")
 
-        # ✨ 新增：同步將 KEEP 和 NO 存入 users 表格中 (使用 $addToSet 避免重複)
-        if action == "KEEP" and place_id:
+        # ✨ 同步將 YES、NO 和 KEEP 存入 users 表格中 (使用 $addToSet 避免重複)
+        if action in ["KEEP", "YES"] and place_id:
             db['users'].update_one(
                 {"user_id": user_id},
                 {"$addToSet": {"bookmarks": place_id}}, 
@@ -172,7 +172,7 @@ class UserService:
         
         # 1. 搜尋紀錄
         logs = list(db['interaction_logs'].find(
-            {"user_id": user_id, "action": {"$in": ["SEARCH", "INIT_PREF"]}}
+            {"user_id": user_id, "action": {"$in": ["SEARCH", "INIT_PREF", "YES"]}}
         ).sort("created_at_server", -1).limit(10))
         recent_searches = [log.get("user_msg") for log in logs if log.get("user_msg")]
 

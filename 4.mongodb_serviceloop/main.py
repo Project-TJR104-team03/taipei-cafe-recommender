@@ -854,6 +854,7 @@ def handle_postback(event):
     
     if action == "yes":
         user_service.log_action(user_id, "YES", place_id, lat=lat, lng=lng)
+        asyncio.create_task(background_update_persona(user_id))
         line_bot_api.reply_message(
             event.reply_token, 
             TextSendMessage(text=f"已記住您喜歡【{shop_name}】✨\n還想找其他的嗎？", quick_reply=get_standard_quick_reply())
