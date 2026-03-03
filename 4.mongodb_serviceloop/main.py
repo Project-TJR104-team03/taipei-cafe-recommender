@@ -18,6 +18,7 @@ from linebot.models import (
     FollowEvent
 )
 from dotenv import load_dotenv
+import vertexai
 
 # 🔥 處理時間狀態
 from datetime import datetime, timedelta
@@ -37,6 +38,12 @@ load_dotenv(dotenv_path=env_path)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Coffee_Recommender")
 
+# ✨ [全域初始化] 啟動 Vertex AI 企業級引擎
+GCP_PROJECT = os.getenv("GCP_PROJECT_ID")
+GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1")
+vertexai.init(project=GCP_PROJECT, location=GCP_LOCATION)
+logger.info(f"✅ 全域 Vertex AI 初始化完成 (Project: {GCP_PROJECT}, Location: {GCP_LOCATION})")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db_client.connect()
@@ -48,7 +55,7 @@ app = FastAPI(lifespan=lifespan)
 line_bot_api = LineBotApi(os.getenv('LINE_CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
 
-recommend_service = RecommendService(api_key=os.getenv("GEMINI_API_KEY"))
+recommend_service = RecommendService()
 user_service = UserService()
 chat_agent = ChatAgent()
 
