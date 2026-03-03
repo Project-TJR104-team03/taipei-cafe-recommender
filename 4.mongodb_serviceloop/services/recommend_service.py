@@ -299,124 +299,125 @@ class RecommendService:
                             item['match_type'] = 'name' 
                         final_candidates = name_results
 
-            # === Path B + A: 先執行Tag篩選再進行向量搜尋 (雙引擎並行架構) ===
-            logger.info(f"🌍 [預先篩選] 啟動地理/標籤搜尋作為基底...")
-            tag_list = []
-            if cafe_tag: tag_list.extend([t.strip() for t in cafe_tag.split(",")])
-            if ai_intent and ai_intent.get("extracted_keywords"):
-                # 把 AI 抓到的關鍵字也當作標籤去碰碰運氣
-                tag_list.extend(ai_intent["extracted_keywords"])
+            if not final_candidates:
+                # === Path B + A: 先執行Tag篩選再進行向量搜尋 (雙引擎並行架構) ===
+                logger.info(f"🌍 [預先篩選] 啟動地理/標籤搜尋作為基底...")
+                tag_list = []
+                if cafe_tag: tag_list.extend([t.strip() for t in cafe_tag.split(",")])
+                if ai_intent and ai_intent.get("extracted_keywords"):
+                    # 把 AI 抓到的關鍵字也當作標籤去碰碰運氣
+                    tag_list.extend(ai_intent["extracted_keywords"])
+                    
+                # 建立基底過濾條件 (方圓 5 公里內)
+                geo_pipeline = [
+                    {"$geoNear": {
+                        "near": {"type": "Point", "coordinates": [current_search_lng, current_search_lat]},
+                        "distanceField": "dist_meters", 
+                        "maxDistance": 5000, # 方圓 5 公里
+                        "spherical": True
+                    }}
+                ]
                 
-            # 建立基底過濾條件 (方圓 5 公里內)
-            geo_pipeline = [
-                {"$geoNear": {
-                    "near": {"type": "Point", "coordinates": [current_search_lng, current_search_lat]},
-                    "distanceField": "dist_meters", 
-                    "maxDistance": 5000, # 方圓 5 公里
-                    "spherical": True
-                }}
-            ]
-            
-            # 黑名單與標籤過濾
-            if blacklist_ids: 
-                geo_pipeline.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
-            
-            strict_pipeline = list(geo_pipeline)
-            if tag_list: 
-                and_conditions = []
+                # 黑名單與標籤過濾
+                if blacklist_ids: 
+                    geo_pipeline.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
+                
+                strict_pipeline = list(geo_pipeline)
+                if tag_list: 
+                    and_conditions = []
 
-                for t in tag_list:
-                    # 針對「每一個標籤 (t)」，只要滿足以下三個條件的「其中一個」就算過關：
-                    # 1. features 裡面這個屬性是 True
-                    # 2. scores 裡面這個屬性的分數 >= 0.5
-                    # 3. tags 陣列裡面直接包含這個字
-                    tag_match = {
-                        "$or": [
-                            {f"features.{t}": True},
-                            {f"scores.{t}": {"$gte": 0.5}},
-                            {"tags": t}
+                    for t in tag_list:
+                        # 針對「每一個標籤 (t)」，只要滿足以下三個條件的「其中一個」就算過關：
+                        # 1. features 裡面這個屬性是 True
+                        # 2. scores 裡面這個屬性的分數 >= 0.5
+                        # 3. tags 陣列裡面直接包含這個字
+                        tag_match = {
+                            "$or": [
+                                {f"features.{t}": True},
+                                {f"scores.{t}": {"$gte": 0.5}},
+                                {"tags": t}
+                            ]
+                        }
+                        and_conditions.append(tag_match)
+
+                        # 將所有標籤的條件組合起來 (使用 $and 代表使用者搜尋的多個標籤必須「同時」滿足)
+                    # 💡 如果您覺得同時滿足太嚴，可以把外層的 "$and" 改成 "$or"
+                    strict_pipeline.append({"$match": {"$and": and_conditions}})
+
+                strict_pipeline.append({"$limit": 250})
+                
+                # 取得基底名單
+                base_candidates = list(db['cafes'].aggregate(strict_pipeline))
+                
+                if len(base_candidates) < 15:
+                    logger.warning(f"⚠️ [降級機制] 嚴格標籤篩選後僅剩 {len(base_candidates)} 家，條件太嚴苛！放寬為純地理範圍搜尋。")
+                    
+                    loose_pipeline = list(geo_pipeline)
+                    loose_pipeline.append({"$limit": 250}) # 只看距離，不管標籤了
+                    
+                    # 重新用寬鬆條件抓取候選名單
+                    base_candidates = list(db['cafes'].aggregate(loose_pipeline))
+
+                # 萃取這批合法店家的 place_id
+                valid_place_ids = [doc['place_id'] for doc in base_candidates]
+                logger.info(f"🛡️ [預先篩選] 成功圈出 {len(valid_place_ids)} 家符合距離與基本標籤的店家。")
+
+                # === 🎯 步驟二：再執行 Path A (從合格名單中做向量語意排序) ===
+                if search_query and valid_place_ids and not theme:
+                    logger.info(f"🔍 [精確打擊] 在 {len(valid_place_ids)} 家合格店中，尋找最符合 '{search_query}' 的語意...")
+                    query_vector = self.get_embedding(search_query)
+                    
+                    if query_vector:
+                        # 故意把向量搜尋的範圍拉大 (numCandidates: 200, limit: 100)
+                        pipeline_macro = [
+                            {"$vectorSearch": {"index": "vector_index", "path": "vector", "queryVector": query_vector, "numCandidates": 200, "limit": 100}},
+                            # 🌟 最關鍵的一行：Post-filtering (後置過濾)，只留下剛剛 Path B 找出來的那些店！
+                            {"$match": {"place_id": {"$in": valid_place_ids}}},
+                            {"$project": {"place_id": 1, "macro_score": { "$meta": "vectorSearchScore" }, "summary": "$scores.summary"}}
                         ]
-                    }
-                    and_conditions.append(tag_match)
+                        
+                        pipeline_micro = [
+                            {"$vectorSearch": {"index": "vector_index", "path": "embedding", "queryVector": query_vector, "numCandidates": 200, "limit": 100}},
+                            {"$match": {"place_id": {"$in": valid_place_ids}}},
+                            {"$project": {"place_id": 1, "micro_score": { "$meta": "vectorSearchScore" }, "matched_review": "$content"}}
+                        ]
+                        async def fetch_macro(): return list(db['cafes'].aggregate(pipeline_macro))
+                        async def fetch_micro(): return list(db['reviews'].aggregate(pipeline_micro))
 
-                    # 將所有標籤的條件組合起來 (使用 $and 代表使用者搜尋的多個標籤必須「同時」滿足)
-                # 💡 如果您覺得同時滿足太嚴，可以把外層的 "$and" 改成 "$or"
-                strict_pipeline.append({"$match": {"$and": and_conditions}})
+                        logger.info("⚡ 啟動平行檢索 (Macro + Micro)...")
+                        macro_results, micro_results = await asyncio.gather(fetch_macro(), fetch_micro())
+                        logger.info(f"📦 檢索完成: 總結命中 {len(macro_results)} 筆, 評論命中 {len(micro_results)} 筆")
 
-            strict_pipeline.append({"$limit": 250})
-            
-            # 取得基底名單
-            base_candidates = list(db['cafes'].aggregate(strict_pipeline))
-            
-            if len(base_candidates) < 15:
-                logger.warning(f"⚠️ [降級機制] 嚴格標籤篩選後僅剩 {len(base_candidates)} 家，條件太嚴苛！放寬為純地理範圍搜尋。")
-                
-                loose_pipeline = list(geo_pipeline)
-                loose_pipeline.append({"$limit": 250}) # 只看距離，不管標籤了
-                
-                # 重新用寬鬆條件抓取候選名單
-                base_candidates = list(db['cafes'].aggregate(loose_pipeline))
+                        fusion_dict = {}
+                        for doc in macro_results: fusion_dict[doc["place_id"]] = {"place_id": doc["place_id"], "macro_score": doc["macro_score"], "micro_score": 0.0, "summary": doc.get("summary", ""), "matched_review": ""}
+                        for doc in micro_results:
+                            pid = doc["place_id"]
+                            if pid not in fusion_dict: fusion_dict[pid] = {"place_id": pid, "macro_score": 0.0, "micro_score": doc["micro_score"], "summary": "", "matched_review": doc.get("matched_review", "")}
+                            else:
+                                if doc["micro_score"] > fusion_dict[pid]["micro_score"]:
+                                    fusion_dict[pid]["micro_score"] = doc["micro_score"]
+                                    fusion_dict[pid]["matched_review"] = doc.get("matched_review", "")
 
-            # 萃取這批合法店家的 place_id
-            valid_place_ids = [doc['place_id'] for doc in base_candidates]
-            logger.info(f"🛡️ [預先篩選] 成功圈出 {len(valid_place_ids)} 家符合距離與基本標籤的店家。")
+                        fused_place_ids = list(fusion_dict.keys())
+                        raw_cafes = list(db['cafes'].find({"place_id": {"$in": fused_place_ids}}))
+                        
+                        raw_results = []
+                        for cafe_info in raw_cafes:
+                            pid = cafe_info["place_id"]
+                            fusion_data_item = fusion_dict[pid]
+                            cafe_info['vector_score'] = (fusion_data_item["macro_score"] * 0.4) + (fusion_data_item["micro_score"] * 0.6)
+                            cafe_info['summary'] = fusion_data_item["summary"] if fusion_data_item["summary"] else cafe_info.get("scores", {}).get("summary", "")
+                            cafe_info['matched_review'] = fusion_data_item["matched_review"]
+                            cafe_info['match_type'] = 'vector' 
+                            raw_results.append(cafe_info)
 
-            # === 🎯 步驟二：再執行 Path A (從合格名單中做向量語意排序) ===
-            if search_query and valid_place_ids and not theme:
-                logger.info(f"🔍 [精確打擊] 在 {len(valid_place_ids)} 家合格店中，尋找最符合 '{search_query}' 的語意...")
-                query_vector = self.get_embedding(search_query)
-                
-                if query_vector:
-                    # 故意把向量搜尋的範圍拉大 (numCandidates: 200, limit: 100)
-                    pipeline_macro = [
-                        {"$vectorSearch": {"index": "vector_index", "path": "vector", "queryVector": query_vector, "numCandidates": 200, "limit": 100}},
-                        # 🌟 最關鍵的一行：Post-filtering (後置過濾)，只留下剛剛 Path B 找出來的那些店！
-                        {"$match": {"place_id": {"$in": valid_place_ids}}},
-                        {"$project": {"place_id": 1, "macro_score": { "$meta": "vectorSearchScore" }, "summary": "$scores.summary"}}
-                    ]
-                    
-                    pipeline_micro = [
-                        {"$vectorSearch": {"index": "vector_index", "path": "embedding", "queryVector": query_vector, "numCandidates": 200, "limit": 100}},
-                        {"$match": {"place_id": {"$in": valid_place_ids}}},
-                        {"$project": {"place_id": 1, "micro_score": { "$meta": "vectorSearchScore" }, "matched_review": "$content"}}
-                    ]
-                    async def fetch_macro(): return list(db['cafes'].aggregate(pipeline_macro))
-                    async def fetch_micro(): return list(db['reviews'].aggregate(pipeline_micro))
+                        raw_results = filter_by_opening_hours(raw_results)
+                        logger.info(f"⏳ [漏斗監控] 時間過濾後，剩餘筆數: {len(raw_results)}")
+                        final_candidates = raw_results
 
-                    logger.info("⚡ 啟動平行檢索 (Macro + Micro)...")
-                    macro_results, micro_results = await asyncio.gather(fetch_macro(), fetch_micro())
-                    logger.info(f"📦 檢索完成: 總結命中 {len(macro_results)} 筆, 評論命中 {len(micro_results)} 筆")
-
-                    fusion_dict = {}
-                    for doc in macro_results: fusion_dict[doc["place_id"]] = {"place_id": doc["place_id"], "macro_score": doc["macro_score"], "micro_score": 0.0, "summary": doc.get("summary", ""), "matched_review": ""}
-                    for doc in micro_results:
-                        pid = doc["place_id"]
-                        if pid not in fusion_dict: fusion_dict[pid] = {"place_id": pid, "macro_score": 0.0, "micro_score": doc["micro_score"], "summary": "", "matched_review": doc.get("matched_review", "")}
-                        else:
-                            if doc["micro_score"] > fusion_dict[pid]["micro_score"]:
-                                fusion_dict[pid]["micro_score"] = doc["micro_score"]
-                                fusion_dict[pid]["matched_review"] = doc.get("matched_review", "")
-
-                    fused_place_ids = list(fusion_dict.keys())
-                    raw_cafes = list(db['cafes'].find({"place_id": {"$in": fused_place_ids}}))
-                    
-                    raw_results = []
-                    for cafe_info in raw_cafes:
-                        pid = cafe_info["place_id"]
-                        fusion_data_item = fusion_dict[pid]
-                        cafe_info['vector_score'] = (fusion_data_item["macro_score"] * 0.4) + (fusion_data_item["micro_score"] * 0.6)
-                        cafe_info['summary'] = fusion_data_item["summary"] if fusion_data_item["summary"] else cafe_info.get("scores", {}).get("summary", "")
-                        cafe_info['matched_review'] = fusion_data_item["matched_review"]
-                        cafe_info['match_type'] = 'vector' 
-                        raw_results.append(cafe_info)
-
-                    raw_results = filter_by_opening_hours(raw_results)
-                    logger.info(f"⏳ [漏斗監控] 時間過濾後，剩餘筆數: {len(raw_results)}")
-                    final_candidates = raw_results
-
-            if not final_candidates and base_candidates:
-                logger.info("⚠️ 跳過向量搜尋，直接使用地理與標籤篩選結果")
-                final_candidates = base_candidates
+                if not final_candidates and base_candidates:
+                    logger.info("⚠️ 跳過向量搜尋，直接使用地理與標籤篩選結果")
+                    final_candidates = base_candidates
 
             # 🌟🌟🌟 === 終極交接：呼叫外部的統一算分漏斗 === 🌟🌟🌟
             if not theme: # 🛡️ 防護罩 4：情境搜尋已經自己排好前10名，不需要過這個漏斗！
