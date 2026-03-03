@@ -5,7 +5,6 @@ import asyncio
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import json
-from vertexai.generative_models import GenerationConfig
 from vertexai.language_models import TextEmbeddingInput, TextEmbeddingModel
 from database import db_client
 from utils import is_google_period_open
@@ -27,7 +26,7 @@ class RecommendService:
         # 初始化 Vertex AI 的向量模型
         try:
             # 使用 Google 最新一代的企業級文本嵌入模型
-            self.embedding_model = TextEmbeddingModel.from_pretrained("text-embedding-004")
+            self.embedding_model = TextEmbeddingModel.from_pretrained("gemini-embedding-001")
             logger.info("✅ Vertex AI Embedding 模型初始化成功！")
         except Exception as e:
             logger.error(f"❌ Vertex AI Embedding 初始化失敗: {e}")
@@ -42,24 +41,17 @@ class RecommendService:
             # Vertex AI 的標準寫法
             inputs = [TextEmbeddingInput(text, "RETRIEVAL_QUERY")]
 
-            # 呼叫模型
-            embeddings = self.embedding_model.get_embeddings(inputs)
+            # 呼叫模型，指定使用1536維度
+            embeddings = self.embedding_model.get_embeddings(inputs, output_dimensionality=1536)
             vector = embeddings[0].values
 
-            # 🛡️ 神級防呆：維度自動適應補丁
-            # text-embedding-004 預設是 768 維度。如果你的 MongoDB Vector Search index 
-            if len(vector) == 768:
-                vector = vector + [0.0] * 768  # 補齊到 1536
-                logger.info("✅ [AI 語意分析成功] 偵測到 768 維，已自動 Padding 至 1536 以相容資料庫")
-            elif len(vector) == 1536:
-                logger.info("✅ [AI 語意分析成功] 向量維度: 1536")
+            if len(vector) == 1536:
+                logger.info(f"✅ [AI 語意分析成功] 向量維度: 1536")
             else:
                 logger.warning(f"⚠️ 預期維度 1536，但回傳為 {len(vector)}")
-                
             return vector
-            
         except Exception as e:
-            logger.error(f"❌ Vertex Embedding Error: {e}")
+            logger.error(f"❌ Embedding Error: {e}")
             return None
     
     async def recommend(self, lat: float, lng: float, user_id: str = None, 
@@ -307,27 +299,59 @@ class RecommendService:
                             item['match_type'] = 'name' 
                         final_candidates = name_results
 
-            # === Path A: 向量搜尋 (雙引擎並行架構) ===
-            if search_query and not final_candidates and not theme: # 🛡️ 防護罩 2
-                logger.info(f"🔍 [Path A] 啟動雙引擎向量搜尋: 關鍵字 '{search_query}'")
+            # === Path B + A: 先執行Tag篩選再進行向量搜尋 (雙引擎並行架構) ===
+            logger.info(f"🌍 [預先篩選] 啟動地理/標籤搜尋作為基底...")
+            tag_list = []
+            if cafe_tag: tag_list.extend([t.strip() for t in cafe_tag.split(",")])
+            if ai_intent and ai_intent.get("extracted_keywords"):
+                # 把 AI 抓到的關鍵字也當作標籤去碰碰運氣
+                tag_list.extend(ai_intent["extracted_keywords"])
+                
+            # 建立基底過濾條件 (方圓 5 公里內)
+            base_pipeline = [
+                {"$geoNear": {
+                    "near": {"type": "Point", "coordinates": [current_search_lng, current_search_lat]},
+                    "distanceField": "dist_meters", 
+                    "maxDistance": 5000, 
+                    "spherical": True
+                }}
+            ]
+            
+            # 黑名單與標籤過濾
+            if blacklist_ids: 
+                base_pipeline.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
+            if tag_list: 
+                # 使用 $in 只要中任何一個標籤即可，避免條件太嚴苛導致名單全空
+                base_pipeline.append({"$match": {"tags": {"$in": tag_list}}})
+                
+            base_pipeline.append({"$limit": 250}) # 抓出方圓 5 公里內最多 250 家候選店
+            
+            # 取得基底名單
+            base_candidates = list(db['cafes'].aggregate(base_pipeline))
+            
+            # 萃取這批合法店家的 place_id
+            valid_place_ids = [doc['place_id'] for doc in base_candidates]
+            logger.info(f"🛡️ [預先篩選] 成功圈出 {len(valid_place_ids)} 家符合距離與基本標籤的店家。")
+
+            # === 🎯 步驟二：再執行 Path A (從合格名單中做向量語意排序) ===
+            if search_query and valid_place_ids and not theme:
+                logger.info(f"🔍 [精確打擊] 在 {len(valid_place_ids)} 家合格店中，尋找最符合 '{search_query}' 的語意...")
                 query_vector = self.get_embedding(search_query)
                 
                 if query_vector:
-                    logger.info(f"✅ [AI 語意分析成功] 向量維度: {len(query_vector)}")
-
+                    # 故意把向量搜尋的範圍拉大 (numCandidates: 200, limit: 100)
                     pipeline_macro = [
-                        {"$vectorSearch": {"index": "vector_index", "path": "vector", "queryVector": query_vector, "numCandidates": 100, "limit": 30}},
+                        {"$vectorSearch": {"index": "vector_index", "path": "vector", "queryVector": query_vector, "numCandidates": 200, "limit": 100}},
+                        # 🌟 最關鍵的一行：Post-filtering (後置過濾)，只留下剛剛 Path B 找出來的那些店！
+                        {"$match": {"place_id": {"$in": valid_place_ids}}},
                         {"$project": {"place_id": 1, "macro_score": { "$meta": "vectorSearchScore" }, "summary": "$scores.summary"}}
                     ]
+                    
                     pipeline_micro = [
-                        {"$vectorSearch": {"index": "vector_index", "path": "embedding", "queryVector": query_vector, "numCandidates": 100, "limit": 30}},
+                        {"$vectorSearch": {"index": "vector_index", "path": "embedding", "queryVector": query_vector, "numCandidates": 200, "limit": 100}},
+                        {"$match": {"place_id": {"$in": valid_place_ids}}},
                         {"$project": {"place_id": 1, "micro_score": { "$meta": "vectorSearchScore" }, "matched_review": "$content"}}
                     ]
-
-                    if blacklist_ids:
-                        pipeline_macro.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
-                        pipeline_micro.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
-
                     async def fetch_macro(): return list(db['cafes'].aggregate(pipeline_macro))
                     async def fetch_micro(): return list(db['reviews'].aggregate(pipeline_micro))
 
@@ -362,30 +386,88 @@ class RecommendService:
                     logger.info(f"⏳ [漏斗監控] 時間過濾後，剩餘筆數: {len(raw_results)}")
                     final_candidates = raw_results
 
-            # === Path B: Tag/Geo 搜尋 ===
-            if not final_candidates and not theme and (cafe_tag or not search_query): # 🛡️ 防護罩 3
-                target_tag = cafe_tag if cafe_tag else ""
-                logger.info(f"🌍 [Path B] 啟動地理/標籤搜尋 (Tag: {target_tag if target_tag else '無'})")
-                tag_list = [t.strip() for t in target_tag.split(",")] if target_tag else []
-                
-                def build_path_b_pipeline(tags_to_search):
-                    pipe = [{"$geoNear": {"near": {"type": "Point", "coordinates": [current_search_lng, current_search_lat]}, "distanceField": "dist_meters", "maxDistance": 3000, "spherical": True}}]
-                    if blacklist_ids: pipe.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
-                    if tags_to_search: pipe.append({"$match": {"tags": {"$all": tags_to_search}}})
-                    pipe.append({"$limit": 50}) 
-                    return pipe
+            if not final_candidates and base_candidates:
+                logger.info("⚠️ 跳過向量搜尋，直接使用地理與標籤篩選結果")
+                final_candidates = base_candidates
 
-                path_b_results = list(db['cafes'].aggregate(build_path_b_pipeline(tag_list)))
+            # if search_query and not final_candidates and not theme: # 🛡️ 防護罩 2
+            #     logger.info(f"🔍 [Path A] 啟動雙引擎向量搜尋: 關鍵字 '{search_query}'")
+            #     query_vector = self.get_embedding(search_query)
                 
-                if not path_b_results and len(tag_list) > 1:
-                    logger.warning(f"⚠️ [降級機制] 找不到同時符合 {tag_list} 的店，拔除次要條件！")
-                    tag_list = [tag_list[0]] 
-                    path_b_results = list(db['cafes'].aggregate(build_path_b_pipeline(tag_list)))
+            #     if query_vector:
+            #         logger.info(f"✅ [AI 語意分析成功] 向量維度: {len(query_vector)}")
 
-                open_results = filter_by_opening_hours(path_b_results)
-                for item in open_results: 
-                    item['match_type'] = 'tag' 
-                final_candidates = open_results
+            #         pipeline_macro = [
+            #             {"$vectorSearch": {"index": "vector_index", "path": "vector", "queryVector": query_vector, "numCandidates": 100, "limit": 30}},
+            #             {"$project": {"place_id": 1, "macro_score": { "$meta": "vectorSearchScore" }, "summary": "$scores.summary"}}
+            #         ]
+            #         pipeline_micro = [
+            #             {"$vectorSearch": {"index": "vector_index", "path": "embedding", "queryVector": query_vector, "numCandidates": 100, "limit": 30}},
+            #             {"$project": {"place_id": 1, "micro_score": { "$meta": "vectorSearchScore" }, "matched_review": "$content"}}
+            #         ]
+
+            #         if blacklist_ids:
+            #             pipeline_macro.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
+            #             pipeline_micro.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
+
+            #         async def fetch_macro(): return list(db['cafes'].aggregate(pipeline_macro))
+            #         async def fetch_micro(): return list(db['reviews'].aggregate(pipeline_micro))
+
+            #         logger.info("⚡ 啟動平行檢索 (Macro + Micro)...")
+            #         macro_results, micro_results = await asyncio.gather(fetch_macro(), fetch_micro())
+            #         logger.info(f"📦 檢索完成: 總結命中 {len(macro_results)} 筆, 評論命中 {len(micro_results)} 筆")
+
+            #         fusion_dict = {}
+            #         for doc in macro_results: fusion_dict[doc["place_id"]] = {"place_id": doc["place_id"], "macro_score": doc["macro_score"], "micro_score": 0.0, "summary": doc.get("summary", ""), "matched_review": ""}
+            #         for doc in micro_results:
+            #             pid = doc["place_id"]
+            #             if pid not in fusion_dict: fusion_dict[pid] = {"place_id": pid, "macro_score": 0.0, "micro_score": doc["micro_score"], "summary": "", "matched_review": doc.get("matched_review", "")}
+            #             else:
+            #                 if doc["micro_score"] > fusion_dict[pid]["micro_score"]:
+            #                     fusion_dict[pid]["micro_score"] = doc["micro_score"]
+            #                     fusion_dict[pid]["matched_review"] = doc.get("matched_review", "")
+
+            #         fused_place_ids = list(fusion_dict.keys())
+            #         raw_cafes = list(db['cafes'].find({"place_id": {"$in": fused_place_ids}}))
+                    
+            #         raw_results = []
+            #         for cafe_info in raw_cafes:
+            #             pid = cafe_info["place_id"]
+            #             fusion_data_item = fusion_dict[pid]
+            #             cafe_info['vector_score'] = (fusion_data_item["macro_score"] * 0.4) + (fusion_data_item["micro_score"] * 0.6)
+            #             cafe_info['summary'] = fusion_data_item["summary"] if fusion_data_item["summary"] else cafe_info.get("scores", {}).get("summary", "")
+            #             cafe_info['matched_review'] = fusion_data_item["matched_review"]
+            #             cafe_info['match_type'] = 'vector' 
+            #             raw_results.append(cafe_info)
+
+            #         raw_results = filter_by_opening_hours(raw_results)
+            #         logger.info(f"⏳ [漏斗監控] 時間過濾後，剩餘筆數: {len(raw_results)}")
+            #         final_candidates = raw_results
+
+            # # === Path B: Tag/Geo 搜尋 ===
+            # if not final_candidates and not theme and (cafe_tag or not search_query): # 🛡️ 防護罩 3
+            #     target_tag = cafe_tag if cafe_tag else ""
+            #     logger.info(f"🌍 [Path B] 啟動地理/標籤搜尋 (Tag: {target_tag if target_tag else '無'})")
+            #     tag_list = [t.strip() for t in target_tag.split(",")] if target_tag else []
+                
+            #     def build_path_b_pipeline(tags_to_search):
+            #         pipe = [{"$geoNear": {"near": {"type": "Point", "coordinates": [current_search_lng, current_search_lat]}, "distanceField": "dist_meters", "maxDistance": 3000, "spherical": True}}]
+            #         if blacklist_ids: pipe.append({"$match": {"place_id": {"$nin": blacklist_ids}}})
+            #         if tags_to_search: pipe.append({"$match": {"tags": {"$all": tags_to_search}}})
+            #         pipe.append({"$limit": 50}) 
+            #         return pipe
+
+            #     path_b_results = list(db['cafes'].aggregate(build_path_b_pipeline(tag_list)))
+                
+            #     if not path_b_results and len(tag_list) > 1:
+            #         logger.warning(f"⚠️ [降級機制] 找不到同時符合 {tag_list} 的店，拔除次要條件！")
+            #         tag_list = [tag_list[0]] 
+            #         path_b_results = list(db['cafes'].aggregate(build_path_b_pipeline(tag_list)))
+
+            #     open_results = filter_by_opening_hours(path_b_results)
+            #     for item in open_results: 
+            #         item['match_type'] = 'tag' 
+            #     final_candidates = open_results
 
             # 🌟🌟🌟 === 終極交接：呼叫外部的統一算分漏斗 === 🌟🌟🌟
             if not theme: # 🛡️ 防護罩 4：情境搜尋已經自己排好前10名，不需要過這個漏斗！
