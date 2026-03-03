@@ -21,6 +21,16 @@ USER_INTENT_SYSTEM_PROMPT_TEMPLATE = """
 2. 若使用者只說「晚上」，預設為 19:00。
 3. 若使用者只說「下午」，預設為 14:00。
 4. 若使用者只說「早上」，預設為 09:00。
+5. ⚠️ 若使用者完全沒有提到時間，請將 has_time 設為 false。
+
+### Output Format (絕對鐵律)
+請你務必、絕對只能回傳以下的 JSON 格式，不要包含任何其他說明文字：
+{{
+    "has_time": true 或 false,
+    "target_time": "YYYY-MM-DD HH:MM", 
+    "time_flexibility": "使用者提到的原始時間字眼，例如: 明天早上10點以後",
+    "intents": ["提取出的其他需求", "例如: 親子友善"]
+}}
 """
 
 class IntentAgent(BaseAgent):

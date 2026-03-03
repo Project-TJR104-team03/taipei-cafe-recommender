@@ -114,3 +114,43 @@ class UserService:
             db['interaction_logs'].delete_many({"user_id": user_id, "action": "NO", "place_id": place_id})
         elif list_type == "bookmarks":
             db['interaction_logs'].delete_many({"user_id": user_id, "action": "KEEP", "place_id": place_id})
+
+    # ==========================================
+    # 🧠 新增：對話狀態 (RAM) 管理管線
+    # ==========================================
+    def get_user_state(self, user_id: str) -> dict:
+        """獲取使用者的 RAM (購物車與歷史對話)"""
+        db = db_client.get_db()
+        user = db['users'].find_one({"user_id": user_id}) or {}
+        return {
+            "chat_window": user.get("chat_window", []),
+            "search_cart": user.get("search_cart", []),
+            "last_session_cart": user.get("last_session_cart", []),
+            "last_updated_at": user.get("last_updated_at")
+        }
+
+    def update_user_state(self, user_id: str, chat_window: list, search_cart: list, last_session_cart: list):
+        """更新 RAM 並刷新最後活動時間"""
+        db = db_client.get_db()
+        db['users'].update_one(
+            {"user_id": user_id},
+            {"$set": {
+                "chat_window": chat_window,
+                "search_cart": search_cart,
+                "last_session_cart": last_session_cart,
+                "last_updated_at": datetime.now()  # 更新時間戳記
+            }},
+            upsert=True
+        )
+
+    def clear_user_cart(self, user_id: str):
+        """【結帳清空】出菜成功後，清空當下狀態，但保留 last_updated_at"""
+        db = db_client.get_db()
+        db['users'].update_one(
+            {"user_id": user_id},
+            {"$set": {
+                "chat_window": [],
+                "search_cart": [],
+                # last_session_cart 絕對不清空，要留著給跨日反問備用！
+            }}
+        )
