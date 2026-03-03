@@ -41,7 +41,7 @@ def clean_name_by_py():
     BUCKET_NAME = os.getenv("BUCKET_NAME", "tjr104-cafe-datalake")
     INPUT_FILE = os.getenv("GCS_RAW_STORE_PATH", "raw/store/base.csv")
     OUT_CSV = os.getenv("GCS_NAME_REGEX_CLEAND", "transform/stage0/cafes_name_regex_cleaned.csv")
-    OUT_JSON = os.getenv("GCS_TAG_REGEX", "transform/stage0/cafes_tag_regex.csv")
+    OUT_JSON = os.getenv("GCS_TAG_REGEX", "transform/stage0/cafes_tag_regex.json")
     # ==========================================
     
     client = storage.Client()
