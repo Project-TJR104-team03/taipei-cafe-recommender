@@ -29,7 +29,7 @@ def calculate_comprehensive_score(
     # ---------------------------------------------------------
     # 維度 1~3: 綜合品質指標
     # ---------------------------------------------------------
-    m = 50.0  
+    m = 200.0  
     bayesian_rating = ((total_reviews / (total_reviews + m)) * rating + 
                        (m / (total_reviews + m)) * global_avg_rating)
     s_static = bayesian_rating / 5.0 
@@ -82,10 +82,10 @@ def calculate_comprehensive_score(
     # ---------------------------------------------------------
     if is_new_user:
         # 新使用者：依賴 AI 語意與客觀評價，不採計行為影響
-        w_vec, w_qual, w_loc, w_beh = 0.40, 0.40, 0.20, 0.00
+        w_vec, w_qual, w_loc, w_beh = 0.50, 0.20, 0.30, 0.00
     else:
         # 老使用者：加入行為偏好權重
-        w_vec, w_qual, w_loc, w_beh = 0.35, 0.30, 0.15, 0.20
+        w_vec, w_qual, w_loc, w_beh = 0.40, 0.15, 0.30, 0.15
 
     # 計算初步總分
     base_score = (w_vec * vec_score) + \
@@ -187,8 +187,8 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
             item['dist_meters'] = geodesic(user_loc, c_loc).meters
             
         dist_meters = item.get('dist_meters', 0)
-        # 第一層硬過濾：超過 3 公里直接淘汰 (除非是精準搜尋店名)
-        if dist_meters > 3000 and item.get('match_type') != 'name': 
+        # 第一層硬過濾：超過 5 公里直接淘汰 (除非是精準搜尋店名)
+        if dist_meters > 5000 and item.get('match_type') != 'name': 
             continue 
         
         # 2. 真實營業時間
