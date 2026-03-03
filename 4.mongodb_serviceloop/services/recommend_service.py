@@ -447,8 +447,8 @@ class RecommendService:
                 if not raw_summary: raw_summary = r.get("matched_review", "")
                 
                 # 🌟 終極版智能分流顯示邏輯：
-                if theme:
-                    # 情況 A：如果是點擊「適合辦公」等情境按鈕 -> 強制給空字串，隱藏文字區塊，版面極簡化！
+                if theme or not search_query:
+                    # 情況 A：點擊情境按鈕，或「單純傳送定位」時 -> 強制給空字串，隱藏文字區塊，版面極簡化！
                     custom_reason = ""
                 else:
                     # 情況 B：如果是手動打字 -> 優先拿 AI 寫好的客製化理由，如果 AI 失敗再退回 raw_summary。
