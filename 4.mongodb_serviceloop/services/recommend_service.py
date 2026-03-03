@@ -14,7 +14,7 @@ from agents.intent_agent import IntentAgent
 from agents.reason_agent import ReasonAgent
 from google import genai 
 from services.scoring import process_and_score_cafes
-
+from datetime import datetime, timedelta  
 
 
 logger = logging.getLogger("Coffee_Recommender")
@@ -180,18 +180,41 @@ class RecommendService:
                         open_cafes.append(cafe)
                 return open_cafes
 
-            # === 4. 取得黑名單 ===
+            # === 4. 取得雙軌黑名單與 AI Persona ===
             blacklist_ids = []
+            user_persona = {}
             if user_id:
-                logs = list(db['interaction_logs'].find({"user_id": user_id, "action": "NO"}, {"place_id": 1}))
-                blacklist_ids = [l['place_id'] for l in logs]
-            
+                user_info = db['users'].find_one({"user_id": user_id}) or {}
+
+                # 軌道 A：永久黑名單
+                permanent_blacklist = user_info.get("blacklist", [])
+                if permanent_blacklist:
+                    blacklist_ids.extend(permanent_blacklist)
+
+                # 提取 AI 畫像
+                user_persona = user_info.get("ai_persona", {})
+
+                # 軌道 B：48 小時冷卻名單 (Soft Ban)
+                forty_eight_hours_ago = datetime.now() - timedelta(hours=48)
+                cooldown_logs = list(db['interaction_logs'].find({
+                    "user_id": user_id,
+                    "action": {"$in": ["COOLDOWN", "NO_REASON", "NO"]},
+                    "created_at_server": {"$gte": forty_eight_hours_ago} # ✨ 關鍵魔法：只抓最近 48 小時
+                }, {"place_id": 1}))
+
+                if cooldown_logs:
+                    blacklist_ids.extend([l['place_id'] for l in cooldown_logs if l.get('place_id')])
+
+                blacklist_ids = list(set(blacklist_ids)) # 去除重複
+
+            # 👇👇👇 以下是你原本的超強即時避雷功能，絕對不能刪，我幫你完美保留了！ 👇👇👇
+
             # 把它加進這次的黑名單裡，確保它絕對不會在下一秒又被推出來！
             if rejected_place_id and rejected_place_id not in blacklist_ids:
                 blacklist_ids.append(rejected_place_id)
 
             # 把負面原因加入向量搜尋 (Path A 的 Prompt Injection)
-            if search_query and negative_reason: # 注意這裡用 search_query
+            if search_query and negative_reason: 
                 search_query = f"{search_query}，但請絕對避開「{negative_reason}」的特徵"
                 logger.info(f"🛡️ 觸發劇本一：加入避雷特徵的向量搜尋 -> {search_query}")
             
@@ -206,7 +229,6 @@ class RecommendService:
                 logger.info(f"🛡️ 觸發劇本二：提取拒絕店家的隱性特徵 -> {rejected_tags}")
 
             final_candidates = [] # 🌟 所有路徑找出來的候選名單，通通丟進這裡，先不算分！
-
             # === 🔥 [新增] Path C: 情境高速公路 (分數優先) ===
             final_data = [] # 用來裝最後排好序的店家
             
@@ -374,7 +396,8 @@ class RecommendService:
                     user_loc=(current_search_lat, current_search_lng),
                     user_id=user_id,
                     rejected_tags=rejected_tags,
-                    ignore_time_penalty=ignore_time
+                    ignore_time_penalty=ignore_time,
+                    user_persona=user_persona
                 )
                 logger.info(f"🏆 算分完成！最終選出 {len(final_data)} 家推薦名單。")
 
