@@ -1,6 +1,7 @@
 # app/agents/intent_agent.py
 import json
 import logging
+import time
 from datetime import datetime
 from agents.base_agent import BaseAgent
 from vertexai.generative_models import GenerationConfig 
@@ -52,16 +53,37 @@ class IntentAgent(BaseAgent):
         """
 
         try:
+            # 🌟 1. 計算輸入的 Token 數量
+            token_info = self.model.count_tokens(full_prompt)
+            input_tokens = token_info.total_tokens
+
+            # 🌟 2. 將「輸入內容」與「Token 數量」印在終端機
+            logger.info(f"==== 🟢 AI 輸入 Prompt (預估 Token: {input_tokens}) ====")
+            logger.info(full_prompt)
+            logger.info("====================================================")
+
             generation_config = GenerationConfig(
                 response_mime_type="application/json",
                 temperature=0.0
             )
 
+            # 🌟 2. 開始計時
+            start_time = time.time()
+
             response = self.model.generate_content(
                 full_prompt,
                 generation_config=generation_config
             )
+
+            # 🌟 3. 結束計時並計算經過的秒數
+            end_time = time.time()
+            elapsed_time = end_time - start_time
             
+            # 🌟 3. 將 AI 的「原始輸出」印在終端機
+            logger.info(f"==== 🔵 AI 原始輸出結果(耗時: {elapsed_time:.2f} 秒) ====")
+            logger.info(response.text)
+            logger.info("============================")
+
             if response.text:
                 clean_text = response.text.replace("```json", "").replace("```", "").strip()
                 result = json.loads(clean_text)
