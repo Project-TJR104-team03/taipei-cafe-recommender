@@ -17,7 +17,9 @@ def calculate_comprehensive_score(
     last_recommended_hours: float = float('inf'), # 距離上次推薦過幾小時
     is_new_user: bool = False,    # 是否為新使用者 (用於控制回饋比率)
     global_avg_rating: float = 4.2, # 全局平均星級 (可依據 DB 狀態調整)
-    has_disliked_features: bool = False # 🌟 新增 10. 是否帶有使用者剛剛拒絕的特徵 (劇本二)
+    has_disliked_features: bool = False, # 🌟 新增 10. 是否帶有使用者剛剛拒絕的特徵
+    user_persona: dict = None,   # ✨ 新增參數
+    cafe_tags: list = None       # ✨ 新增參數
 ) -> float:
     """
     計算咖啡廳推薦最終加權分數
@@ -27,8 +29,7 @@ def calculate_comprehensive_score(
     # ---------------------------------------------------------
     # 維度 1~3: 綜合品質指標
     # ---------------------------------------------------------
-    # A. 貝氏平均靜態分數
-    m = 50.0  # 信心門檻值
+    m = 200.0  
     bayesian_rating = ((total_reviews / (total_reviews + m)) * rating + 
                        (m / (total_reviews + m)) * global_avg_rating)
     s_static = bayesian_rating / 5.0 
@@ -37,9 +38,9 @@ def calculate_comprehensive_score(
     if hours_until_close >= 3:
         s_time = 1.0
     elif hours_until_close > 0:
-        s_time = hours_until_close / 3.0  # 剩餘時間比例
+        s_time = hours_until_close / 3.0  
     else:
-        s_time = 0.0  # 已打烊或即將打烊
+        s_time = 0.0  
         
     # 整合品質分數 (70% 看評價，30% 看營業時間餘裕)
     score_quality = (s_static * 0.7) + (s_time * 0.3)
@@ -81,10 +82,10 @@ def calculate_comprehensive_score(
     # ---------------------------------------------------------
     if is_new_user:
         # 新使用者：依賴 AI 語意與客觀評價，不採計行為影響
-        w_vec, w_qual, w_loc, w_beh = 0.40, 0.40, 0.20, 0.00
+        w_vec, w_qual, w_loc, w_beh = 0.50, 0.20, 0.30, 0.00
     else:
         # 老使用者：加入行為偏好權重
-        w_vec, w_qual, w_loc, w_beh = 0.35, 0.30, 0.15, 0.20
+        w_vec, w_qual, w_loc, w_beh = 0.40, 0.15, 0.30, 0.15
 
     # 計算初步總分
     base_score = (w_vec * vec_score) + \
@@ -92,12 +93,24 @@ def calculate_comprehensive_score(
                  (w_loc * score_location) + \
                  (w_beh * s_behavior) + \
                  p_cold
+                 
+    # ---------------------------------------------------------
+    # 🌟 [究極進化] AI Persona 靈魂加成系統
+    # ---------------------------------------------------------
+    if user_persona and cafe_tags:
+        pref_tags = user_persona.get("preferred_tags", [])
+        avoid_tags = user_persona.get("avoid_tags", [])
+        
+        match_pref = len(set(pref_tags) & set(cafe_tags))
+        base_score += min(match_pref * 0.05, 0.15)
+        
+        match_avoid = len(set(avoid_tags) & set(cafe_tags))
+        base_score -= (match_avoid * 0.15)
 
     # ---------------------------------------------------------
     # 🌟 隱性特徵懲罰 (劇本二)
     # ---------------------------------------------------------
-    # 如果這家店帶有使用者剛剛「不給原因拒絕」的店家特徵，初步總分打 8 折
-    if has_disliked_features:
+    if has_disliked_features: 
         base_score *= 0.8
 
     # ---------------------------------------------------------
@@ -105,9 +118,9 @@ def calculate_comprehensive_score(
     # ---------------------------------------------------------
     penalty = 1.0
     if last_recommended_hours < 24:
-        penalty = 0.1  # 24H 內推過，打 1 折沉底
+        penalty = 0.1  
     elif last_recommended_hours < 48:
-        penalty = 0.5  # 24~48H 內推過，打 5 折
+        penalty = 0.5  
 
     final_score = base_score * penalty
 
@@ -120,8 +133,7 @@ def calculate_comprehensive_score(
 # =====================================================================
 
 def get_hours_until_close(opening_hours: dict) -> float:
-    """計算距離打烊還有幾小時 (回傳浮點數，例如 1.5 小時)"""
-    if not opening_hours: return 3.0 # 沒資料預設給個安全值
+    if not opening_hours: return 3.0 
     if opening_hours.get('is_24_hours'): return 24.0
     
     periods = opening_hours.get('periods', [])
@@ -158,14 +170,13 @@ def get_hours_until_close(opening_hours: dict) -> float:
             check_mins += 7 * 24 * 60
             
         if o_mins <= check_mins < c_mins:
-            return (c_mins - check_mins) / 60.0 # 算出剩餘分鐘數並轉為小時
+            return (c_mins - check_mins) / 60.0 
             
-    return 0.0 # 已經打烊
+    return 0.0 
 
-def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rejected_tags: list, ignore_time_penalty: bool = False) -> list:
+def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rejected_tags: list, ignore_time_penalty: bool = False, user_persona: dict = None) -> list:
     """
-    統一算分漏斗：無論是哪一條路徑 (Path 0/A/B) 找出的店，
-    都必須經過這裡進行真實數據清洗與算分！
+    統一算分漏斗：無論是哪一條路徑找出的店，都必須經過這裡進行真實數據清洗與算分！
     """
     scored_data = []
     
@@ -176,13 +187,13 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
             item['dist_meters'] = geodesic(user_loc, c_loc).meters
             
         dist_meters = item.get('dist_meters', 0)
-        # 第一層硬過濾：超過 3 公里直接淘汰 (除非是精準搜尋店名)
-        if dist_meters > 3000 and item.get('match_type') != 'name': 
+        # 第一層硬過濾：超過 5 公里直接淘汰 (除非是精準搜尋店名)
+        if dist_meters > 5000 and item.get('match_type') != 'name': 
             continue 
         
         # 2. 真實營業時間
         if ignore_time_penalty:
-            hours_until_close = 3.0 # 如果有特殊時間需求 (深夜/未來)，直接給予滿分 3.0 小時，不扣時間分！
+            hours_until_close = 3.0 
         else:
             hours_until_close = get_hours_until_close(item.get('opening_hours', {}))
         
@@ -205,9 +216,14 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
         # 5. 使用者狀態與避雷
         is_new = False if user_id else True
         has_disliked_features = False
+        
+        # ✨ 安全萃取該店家的 tags 給 AI Persona 算分用
+        cafe_tags = item.get("tags", [])
+        if not cafe_tags and "ai_tags" in item:
+            cafe_tags = [t.get("tag", "") for t in item.get("ai_tags", []) if isinstance(t, dict)]
+
         if rejected_tags:
-            item_tags = [t['tag'] for t in item.get('ai_tags', [])]
-            if set(rejected_tags) & set(item_tags): has_disliked_features = True
+            if set(rejected_tags) & set(cafe_tags): has_disliked_features = True
 
         # 6. 分流算分：判斷是「指定店名」還是「AI 推薦」
         if item.get('match_type') == 'name':
@@ -229,7 +245,9 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
                 hours_until_close=hours_until_close,
                 clicks=clicks, keeps=keeps, dislikes=dislikes,
                 is_new_user=is_new,
-                has_disliked_features=has_disliked_features
+                has_disliked_features=has_disliked_features,
+                user_persona=user_persona, # ✨ 傳入 Persona
+                cafe_tags=cafe_tags        # ✨ 傳入 Tags
             )        
         
         # 👑 特權：精準店名搜尋，給予超級加分確保排在第一，但依然會被營業時間扣分！

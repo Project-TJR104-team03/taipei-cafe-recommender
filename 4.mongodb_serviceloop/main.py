@@ -28,6 +28,7 @@ from database import db_client
 from services.recommend_service import RecommendService
 from services.user_service import UserService
 from agents.chat_agent import ChatAgent
+from agents.preference_agent import PreferenceAgent
 
 # --- 強制抓取 .env ---
 current_file_path = Path(__file__).resolve()
@@ -58,6 +59,7 @@ handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
 recommend_service = RecommendService()
 user_service = UserService()
 chat_agent = ChatAgent()
+preference_agent = PreferenceAgent()
 
 user_sessions = {}
 blacklist_sessions = {} 
@@ -111,34 +113,26 @@ def get_button_reaction(tag):
     ]
     return random.choice(openings), random.choice(closings)
 
-# ✨ [完美整合版] 推薦理由濾水器與斷句系統
+# ✨ [純淨版] 推薦理由濾水器 (只負責排版與防護，不破壞字串)
 def clean_summary_text(text):
     if not text: return ""
-    # 1. 切割「整體而言，」只取後面的重點
-    parts = text.split("整體而言，")
-    core = parts[-1] if len(parts) > 1 else text
+    core = text.strip()
     
-    # 2. 自動過濾掉前方的「店名是一家」、「店名的」等冗長主詞 (容許範圍15字內)
-    core = re.sub(r"^[^，。]{1,15}?(是一家|是|的)", "", core)
-    
-    # 3. 強制過濾掉括號註解 (例如：(此店較著重咖啡...))
+    # 1. 強制過濾掉括號註解
     core = re.sub(r"\(.*?\)|（.*?）", "", core)
-    
-    # 4. 移除結尾多餘符號
     core = core.strip(" 。-")
     
-    # 5. 智能斷句系統 (保證不出現 ... 且完整顯示)
-    # LINE 卡片兩行極限大約是 25~28 字。我們把防線設在 26 字。
-    if len(core) > 26:
-        # 如果超過，我們在句子前 26 個字裡面，尋找「最後一個出現的逗號或頓號」
-        last_comma = max(core.rfind("，", 0, 26), core.rfind("、", 0, 26))
+    # 2. 智能斷句防護 (放寬到 36 字，完美利用 LINE 卡片兩行空間)
+    if len(core) > 36:
+        last_period = max(core.rfind("。", 0, 36), core.rfind("！", 0, 36))
+        last_comma = max(core.rfind("，", 0, 36), core.rfind("、", 0, 36))
         
-        # 如果有找到合適的逗號 (例如在第 15 字)，就在逗號處完美收尾！
-        if last_comma > 10: 
+        if last_period > 5:
+            core = core[:last_period]
+        elif last_comma > 5: 
             core = core[:last_comma]
         else:
-            # 萬一 AI 寫了超過 26 個字完全沒有逗號，就只能保留前 24 字避免撐破卡片
-            core = core[:24] 
+            core = core[:34] + "..."
             
     return core
 
@@ -391,6 +385,67 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
             {"final_name": "路易莎 (備援)", "place_id": "mock_002", "rating": 4.2, "dist_meters": 300, "attributes": {"types": ["chain"]}}
         ]
     
+    # 🌟 [新增] 依據預設情境權重 (SCENARIO_CONFIG) 組合專屬開場白
+   if theme and not opening:
+        theme_names = {"workspace": "適合辦公", "dating": "質感約會", "pet_friendly": "毛孩同樂", "relax": "獨處放鬆"}
+        theme_zh = theme_names.get(theme, "專屬")
+        
+        # 1. 寫入你的場景權重配置
+        SCENARIO_CONFIG = {
+            "適合辦公": {"has_plug": 0.35, "time_flexibility_score": 0.25, "has_wifi": 0.20, "is_work_friendly": 0.15, "is_quiet": 0.05},
+            "質感約會": {"has_dessert": 0.30, "service_quality_score": 0.25, "hipster_style": 0.15, "retro": 0.15, "is_old_house": 0.10, "can_reserve": 0.05},
+            "毛孩同樂": {"is_pet_friendly": 0.5, "has_shop_cat": 0.2, "has_shop_dog": 0.2, "has_outdoor_seating": 0.1},
+            "獨處放鬆": {"is_quiet": 0.4, "service_quality_score": 0.2, "time_flexibility_score": 0.2, "is_specialty_coffee": 0.2}
+        }
+        
+        # 2. 建立白話文翻譯字典
+        TRANSLATION_MAP = {
+            "has_plug": "提供插座",
+            "time_flexibility_score": "不限時",
+            "has_wifi": "穩定 Wi-Fi",
+            "is_work_friendly": "工作友善",
+            "is_quiet": "安靜舒適",
+            "has_dessert": "美味甜點",
+            "service_quality_score": "服務佳",
+            "hipster_style": "質感文青",
+            "retro": "復古氛圍",
+            "is_old_house": "特色老宅",
+            "can_reserve": "可預約",
+            "is_pet_friendly": "寵物友善",
+            "has_shop_cat": "有可愛店寵",
+            "has_shop_dog": "有可愛店寵",
+            "has_outdoor_seating": "戶外座位",
+            "is_specialty_coffee": "職人手沖"
+        }
+        
+        # 3. 抓取權重最高的前 2 名特徵
+        if theme_zh in SCENARIO_CONFIG:
+            features_dict = SCENARIO_CONFIG[theme_zh]
+            # 依據權重分數 (value) 由大到小排序
+            sorted_features = sorted(features_dict.items(), key=lambda x: x[1], reverse=True)
+            
+            unique_features = []
+            for feat_key, _ in sorted_features:
+                zh_name = TRANSLATION_MAP.get(feat_key, "環境舒適")
+                # 確保翻譯出來的詞沒有重複，才加進去
+                if zh_name not in unique_features:
+                    unique_features.append(zh_name)
+                # 只要收集滿 2 個不一樣的特徵就可以停止了
+                if len(unique_features) == 2:
+                    break
+                    
+            f1 = unique_features[0] if len(unique_features) > 0 else "環境舒適"
+            f2 = unique_features[1] if len(unique_features) > 1 else "評價優良"
+        else:
+            f1, f2 = "環境舒適", "評價優良" # 防呆保底
+            
+        # 4. 多樣化句型隨機套用
+        templates = [
+            f"收到！為您尋找主打「{f1}」與「{f2}」的最高分【{theme_zh}】神店... 🚀",
+            f"沒問題！馬上幫您鎖定具備「{f1}」且「{f2}」的【{theme_zh}】好去處... ☕",
+            f"懂你想找【{theme_zh}】！立刻特搜幾家「{f1}、{f2}」的最高分名單... ⚡"
+        ]
+        opening = random.choice(templates)
 
    bubbles = []
    for cafe in cafe_list:
@@ -696,6 +751,19 @@ def handle_postback(event):
         theme_names = {"workspace": "適合辦公", "dating": "質感約會", "pet_friendly": "毛孩同樂", "relax": "獨處放鬆"}
         
         if loc:
+            # 🔽 移除固定字串，直接呼叫核心流程，讓它自己「看完店家再來決定要說什麼」
+            user_service.update_user_state(user_id, [], [theme_names.get(theme, "")], [])
+            asyncio.create_task(process_recommendation(event.reply_token, lat, lng, user_id=user_id, theme=theme))
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📍 請先分享位置，我才能幫您找附近的店喔！", quick_reply=get_standard_quick_reply()))
+        return
+    
+    # ✨ 新增：處理情境懶人包的點擊
+    if action == "theme_search":
+        theme = params.get('theme')
+        theme_names = {"workspace": "適合辦公", "dating": "質感約會", "pet_friendly": "毛孩同樂", "relax": "獨處放鬆"}
+        
+        if loc:
             op_msg = f"收到！馬上為您尋找最高分的「{theme_names.get(theme, '專屬')}」神店... 🚀"
             user_service.update_user_state(user_id, [], [theme_names.get(theme, "")], [])
             asyncio.create_task(process_recommendation(event.reply_token, lat, lng, user_id=user_id, theme=theme, opening=op_msg))
@@ -754,29 +822,29 @@ def handle_postback(event):
         return
     
 
-    if action == "confirm_blacklist":
+    elif action == "confirm_blacklist":
         place_id = params.get('id')
         ans = params.get('ans')
 
         session_data = blacklist_sessions.get(user_id, {})
         negative_reason = session_data.get("reason")
-            
-        if user_id in blacklist_sessions:
-            del blacklist_sessions[user_id]
+        if user_id in blacklist_sessions: del blacklist_sessions[user_id]
             
         if ans == "yes":
             user_service.log_action(user_id, "NO", place_id, lat=lat, lng=lng)
-            reply_text = "🚫 已加入黑名單！正在為您尋找其他更適合的店家... 🔄"
+            user_service.add_to_user_list(user_id, "blacklist", place_id) # 寫入永久黑名單陣列
+            reply_text = "🚫 已加入永久黑名單！正在為您尋找其他更適合的店家... 🔄"
+            # 🌟 雙軌機制 3：確認加入永久黑名單，觸發 AI 學習地雷
+            asyncio.create_task(background_update_persona(user_id))
         else:
-            reply_text = "👌 沒問題！正在為您尋找其他店家... 🔄"
+            reply_text = "👌 沒問題！48小時後會再次解鎖。正在為您尋找其他店家... 🔄"
                 
         line_bot_api.push_message(user_id, TextSendMessage(text=reply_text))
         
         if loc:
             asyncio.create_task(process_recommendation(
                 event.reply_token, loc['lat'], loc['lng'], user_id=user_id,
-                rejected_place_id=place_id, 
-                negative_reason=negative_reason 
+                rejected_place_id=place_id, negative_reason=negative_reason 
             ))
         else:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請重新傳送位置📍", quick_reply=get_standard_quick_reply()))
@@ -792,21 +860,26 @@ def handle_postback(event):
         )
     elif action == "no":
         user_sessions[user_id] = place_id
+        # 🌟 雙軌機制 1：即刻冷卻！使用者按「不行」，馬上寫入 COOLDOWN 讓他 48 小時內消失
+        user_service.log_action(user_id, "COOLDOWN", place_id, lat=lat, lng=lng)
+        
         quick_reply = QuickReply(items=[
             QuickReplyButton(action=PostbackAction(label="太貴了", data=f"reason=expensive&id={place_id}")),
             QuickReplyButton(action=PostbackAction(label="環境太吵", data=f"reason=noisy&id={place_id}")),
             QuickReplyButton(action=PostbackAction(label="沒有插座", data=f"reason=no_plug&id={place_id}")),
+            QuickReplyButton(action=PostbackAction(label="單純不想去", data=f"reason=change_only&id={place_id}")),
         ])
         line_bot_api.reply_message(
             event.reply_token, 
-            TextSendMessage(text=f"請問不喜歡【{shop_name}】的原因是？\n(可直接打字或選按鈕)", quick_reply=quick_reply)
+            TextSendMessage(text=f"請問不喜歡【{shop_name}】的原因是？\n(此店已為您暫時隱藏 48 小時 🕒)", quick_reply=quick_reply)
         )
+        
     elif action == "keep":
         user_service.log_action(user_id, "KEEP", place_id, lat=lat, lng=lng)
-        line_bot_api.reply_message(
-            event.reply_token, 
-            TextSendMessage(text=f"已將【{shop_name}】加入收藏 ❤️\n要繼續找其他店家嗎？", quick_reply=get_standard_quick_reply())
-        )
+        user_service.add_to_user_list(user_id, "bookmarks", place_id) # 寫入資料庫陣列
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"已將【{shop_name}】加入收藏 ❤️\n要繼續找其他店家嗎？", quick_reply=get_standard_quick_reply()))
+        # 🌟 雙軌機制 2：加入收藏，觸發 AI 分析喜好
+        asyncio.create_task(background_update_persona(user_id))
     elif params.get('reason'):
         if user_id in user_sessions: del user_sessions[user_id]
         reason = params.get('reason')
@@ -838,3 +911,14 @@ def handle_postback(event):
 def handle_follow(event):
     welcome_text = "嗨！我是 AI 咖啡助手 ☕\n請點擊下方按鈕分享位置，讓我為您推薦！👇"
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=welcome_text, quick_reply=get_standard_quick_reply()))
+    
+    
+# === 加在 main.py 的最下面 ===
+async def background_update_persona(user_id: str):
+    """背景執行：收集資料 -> 呼叫 PreferenceAgent -> 存入資料庫"""
+    logger.info(f"🕵️ 啟動背景偏好分析任務 (User: {user_id})...")
+    behavior_data = user_service.get_behavior_data_for_analysis(user_id)
+    
+    if behavior_data["frequently_bookmarked_tags"] or behavior_data["rejected_features_or_reasons"]:
+        persona_data = await preference_agent.analyze_user_preferences(behavior_data)
+        user_service.save_user_persona(user_id, persona_data)

@@ -7,7 +7,7 @@ from vertexai.generative_models import GenerativeModel
 logger = logging.getLogger("AI_Agent")
 
 class BaseAgent:
-    def __init__(self, model_name="gemini-2.0-flash-001"):
+    def __init__(self, model_name="gemini-2.5-flash"):
         # 取得 GCP 專案設定
         project_id = os.getenv("GCP_PROJECT_ID")
         location = os.getenv("GCP_LOCATION", "us-central1")
