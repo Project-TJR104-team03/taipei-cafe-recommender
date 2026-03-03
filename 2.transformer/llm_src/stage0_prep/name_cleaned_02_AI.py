@@ -14,7 +14,7 @@ load_dotenv()
 # 模型與 API 配置
 PROJECT_ID = os.getenv("PROJECT_ID", "project-tjr104-cafe") 
 LOCATION = "us-central1"  # 建議使用 us-central1，模型支援度最高
-MODEL_NAME = "gemini-2.5-flash"
+MODEL_NAME = "gemini-2.5-pro"
 
 # 效能與速率限制 (10 RPM 安全設定)
 BATCH_SIZE = 30  
@@ -26,7 +26,8 @@ vertexai.init(project=PROJECT_ID, location=LOCATION)
 # --- 3. 初始化模型 (注意 GenerationConfig 的寫法) ---
 model = GenerativeModel(MODEL_NAME)
 generation_config = GenerationConfig(
-    response_mime_type="application/json"
+    response_mime_type="application/json",
+    temperature=0.0 
 )
 def ai_cleaner_batch(model, batch_data):
     """呼叫 AI 進行批次清洗"""
