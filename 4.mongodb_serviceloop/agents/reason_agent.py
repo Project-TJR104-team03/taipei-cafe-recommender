@@ -2,6 +2,7 @@
 import json
 import logging
 import asyncio
+import time
 from agents.base_agent import BaseAgent
 from vertexai.generative_models import GenerationConfig
 
@@ -58,10 +59,21 @@ class ReasonAgent(BaseAgent):
         )
 
         try:
+            # 🌟 1. 計算輸入的 Token 數量並印出完整的 Prompt
+            token_info = self.model.count_tokens(full_prompt)
+            input_tokens = token_info.total_tokens
+            
+            logger.info(f"==== 🟢 [ReasonAgent] AI 輸入 Prompt (預估 Token: {input_tokens}) ====")
+            logger.info(full_prompt)
+            logger.info("=================================================================")
+
             generation_config = GenerationConfig(
                 response_mime_type="application/json",
                 temperature=0.2 
             )
+
+            # 🌟 2. 開始計時
+            start_time = time.time()
 
             # 使用 to_thread 確保呼叫 Vertex AI 時不會卡死主程式
             response = await asyncio.to_thread(
@@ -69,6 +81,17 @@ class ReasonAgent(BaseAgent):
                 full_prompt,
                 generation_config=generation_config
             )
+
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+
+            # 🌟 2. 將 AI 的「原始輸出」印在終端機
+            logger.info(f"==== 🔵 [ReasonAgent] AI 原始輸出結果 (耗時: {elapsed_time:.2f} 秒) ====")
+            if response.text:
+                logger.info(response.text)
+            else:
+                logger.info("(AI 沒有回傳任何文字)")
+            logger.info("==========================================")
 
             if response.text:
                 clean_text = response.text.replace("```json", "").replace("```", "").strip()
