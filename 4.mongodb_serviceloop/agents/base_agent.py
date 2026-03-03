@@ -13,10 +13,8 @@ class BaseAgent:
         location = os.getenv("GCP_LOCATION", "us-central1")
         
         try:
-            # 使用 Vertex AI 初始化
-            vertexai.init(project=project_id, location=location)
             self.model = GenerativeModel(model_name)
-            logger.info(f"✅ Vertex AI 初始化成功，使用模型: {model_name}")
+            logger.info(f"✅ AI 大腦裝載成功，使用模型: {model_name}")
         except Exception as e:
             logger.error(f"❌ Vertex AI 初始化失敗: {e}")
             self.model = None

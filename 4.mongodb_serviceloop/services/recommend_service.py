@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 import json
 from vertexai.generative_models import GenerationConfig
+from vertexai.language_models import TextEmbeddingInput, TextEmbeddingModel
 from database import db_client
 from utils import is_google_period_open
 from locations import ALL_LOCATIONS
@@ -19,34 +20,46 @@ from services.scoring import process_and_score_cafes
 logger = logging.getLogger("Coffee_Recommender")
 
 class RecommendService:
-    def __init__(self, api_key: str):
+    def __init__(self):
         self.intent_agent = IntentAgent()
         self.reason_agent = ReasonAgent()
-        if api_key:
-            self.client = genai.Client(api_key=api_key)
-        else:
-            self.client = None
+        
+        # 初始化 Vertex AI 的向量模型
+        try:
+            # 使用 Google 最新一代的企業級文本嵌入模型
+            self.embedding_model = TextEmbeddingModel.from_pretrained("text-embedding-004")
+            logger.info("✅ Vertex AI Embedding 模型初始化成功！")
+        except Exception as e:
+            logger.error(f"❌ Vertex AI Embedding 初始化失敗: {e}")
+            self.embedding_model = None
 
     def get_embedding(self, text: str) -> Optional[List[float]]:
         try:
-            if not self.client: 
-                logger.error("❌ Gemini Client 未初始化")
+            if not self.embedding_model: 
+                logger.error("❌ Embedding 模型未準備好")
                 return None
             
-            response = self.client.models.embed_content(
-                model='models/gemini-embedding-001',
-                contents=text,
-                config={'task_type': 'RETRIEVAL_QUERY', 'output_dimensionality': 1536}
-            )
-            vector = response.embeddings[0].values
-            
-            if len(vector) == 1536:
-                logger.info(f"✅ [AI 語意分析成功] 向量維度: 1536")
+            # Vertex AI 的標準寫法
+            inputs = [TextEmbeddingInput(text, "RETRIEVAL_QUERY")]
+
+            # 呼叫模型
+            embeddings = self.embedding_model.get_embeddings(inputs)
+            vector = embeddings[0].values
+
+            # 🛡️ 神級防呆：維度自動適應補丁
+            # text-embedding-004 預設是 768 維度。如果你的 MongoDB Vector Search index 
+            if len(vector) == 768:
+                vector = vector + [0.0] * 768  # 補齊到 1536
+                logger.info("✅ [AI 語意分析成功] 偵測到 768 維，已自動 Padding 至 1536 以相容資料庫")
+            elif len(vector) == 1536:
+                logger.info("✅ [AI 語意分析成功] 向量維度: 1536")
             else:
                 logger.warning(f"⚠️ 預期維度 1536，但回傳為 {len(vector)}")
+                
             return vector
+            
         except Exception as e:
-            logger.error(f"❌ Embedding Error: {e}")
+            logger.error(f"❌ Vertex Embedding Error: {e}")
             return None
     
     async def recommend(self, lat: float, lng: float, user_id: str = None, 
