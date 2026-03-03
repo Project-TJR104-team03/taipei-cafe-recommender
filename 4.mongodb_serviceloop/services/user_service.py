@@ -154,3 +154,56 @@ class UserService:
                 # last_session_cart 絕對不清空，要留著給跨日反問備用！
             }}
         )
+        
+# === services/user_service.py (加在最下方) ===
+
+    def add_to_user_list(self, user_id: str, list_type: str, place_id: str):
+        """將店家加入使用者的收藏(bookmarks)或永久黑名單(blacklist)陣列"""
+        db = db_client.get_db()
+        db['users'].update_one(
+            {"user_id": user_id},
+            {"$addToSet": {list_type: place_id}}, # $addToSet 可避免重複加入
+            upsert=True
+        )
+
+    def get_behavior_data_for_analysis(self, user_id: str) -> dict:
+        """收集使用者的所有足跡，準備餵給 AI 進行分析"""
+        db = db_client.get_db()
+        
+        # 1. 搜尋紀錄
+        logs = list(db['interaction_logs'].find(
+            {"user_id": user_id, "action": {"$in": ["SEARCH", "INIT_PREF"]}}
+        ).sort("created_at_server", -1).limit(10))
+        recent_searches = [log.get("user_msg") for log in logs if log.get("user_msg")]
+
+        # 2. 拒絕原因
+        reject_logs = list(db['interaction_logs'].find(
+            {"user_id": user_id, "action": {"$in": ["NO", "NO_REASON"]}}
+        ).sort("created_at_server", -1).limit(10))
+        dislikes = [{"rejected_reason": rl.get("reason")} for rl in reject_logs if rl.get("reason")]
+
+        # 3. 收藏清單特徵
+        user_info = db['users'].find_one({"user_id": user_id}) or {}
+        bookmarks = user_info.get("bookmarks", [])
+        bookmarked_features = []
+        if bookmarks:
+            fav_cafes = list(db['cafes'].find({"place_id": {"$in": bookmarks[:5]}}))
+            for fc in fav_cafes:
+                tags = [t.get("tag", "") for t in fc.get("ai_tags", []) if isinstance(t, dict)]
+                if tags: bookmarked_features.extend(tags[:3])
+
+        return {
+            "recent_search_queries": recent_searches,
+            "rejected_features_or_reasons": dislikes,
+            "frequently_bookmarked_tags": list(set(bookmarked_features))
+        }
+
+    def save_user_persona(self, user_id: str, persona_data: dict):
+        """將 AI 分析出來的 Persona 存回 users 表格中"""
+        if not persona_data: return
+        db = db_client.get_db()
+        db['users'].update_one(
+            {"user_id": user_id},
+            {"$set": {"ai_persona": persona_data}},
+            upsert=True
+        )
