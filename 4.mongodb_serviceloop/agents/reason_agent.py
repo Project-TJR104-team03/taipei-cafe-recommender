@@ -59,65 +59,51 @@ class ReasonAgent(BaseAgent):
         )
 
         try:
-            # 🌟 1. 計算輸入的 Token 數量並印出完整的 Prompt
+            # 🌟 1. 計算輸入的 Token 數量
             token_info = self.model.count_tokens(full_prompt)
             input_tokens = token_info.total_tokens
             
-            logger.info(f"==== 🟢 [ReasonAgent] AI 輸入 Prompt (預估 Token: {input_tokens}) ====")
-            logger.info(full_prompt)
-            logger.info("=================================================================")
+            # ✂️ [瘦身] 精簡輸入 Log
+            logger.info(f"🟢 [ReasonAgent] 輸入 | 需求: '{user_query}' | 候選: {len(cafes)} 家")
+            logger.debug(f"==== 🟢 [ReasonAgent] 完整 Prompt ====\n{full_prompt}\n======================================")
 
             generation_config = GenerationConfig(
                 response_mime_type="application/json",
                 temperature=0.2 
             )
 
-            # 🌟 2. 開始計時
+            # 🌟 2. 開始計時並呼叫 AI
             start_time = time.time()
-
-            # 使用 to_thread 確保呼叫 Vertex AI 時不會卡死主程式
             response = await asyncio.to_thread(
                 self.model.generate_content,
                 full_prompt,
                 generation_config=generation_config
             )
-
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-
-            # 🌟 2. 將 AI 的「原始輸出」印在終端機
-            logger.info(f"==== 🔵 [ReasonAgent] AI 原始輸出結果 (耗時: {elapsed_time:.2f} 秒) ====")
-            if response.text:
-                logger.info(response.text)
-            else:
-                logger.info("(AI 沒有回傳任何文字)")
-            logger.info("==========================================")
+            elapsed_time = time.time() - start_time
 
             if response.text:
                 clean_text = response.text.replace("```json", "").replace("```", "").strip()
                 parsed_data = json.loads(clean_text)
                 
-                # 🛡️ 神級防呆機制保留：如果 AI 搞錯格式回傳了 List，自動把它轉回 Dict
+                # 🛡️ 神級防呆機制保留
                 if isinstance(parsed_data, list):
                     logger.warning("⚠️ AI 回傳了 List 格式，正在自動修正為 Dict...")
                     reasons_dict = {}
                     for item in parsed_data:
                         if isinstance(item, dict):
-                            # 情況A: [{"id": "123", "reason": "abc"}]
                             item_id = item.get("id", item.get("place_id"))
                             item_reason = item.get("reason", item.get("理由"))
                             if item_id and item_reason:
                                 reasons_dict[item_id] = item_reason
-                            # 情況B: [{"123": "abc"}, {"456": "def"}]
                             else:
                                 reasons_dict.update(item)
                     parsed_data = reasons_dict
                 
-                # 如果還是不是 Dict，強制給個空字典避免崩潰
                 elif not isinstance(parsed_data, dict):
                     parsed_data = {}
 
-                logger.info(f"🤖 [Reason AI] 成功為 {len(parsed_data)} 家店生成專屬理由")
+                # ✂️ [瘦身] 將耗時、Token 與壓平後的 JSON 合併成精華一行！
+                logger.info(f"🔵 [ReasonAgent] 輸出 | 耗時: {elapsed_time:.2f}s | Token: {input_tokens} | 解析: {json.dumps(parsed_data, ensure_ascii=False)}")
                 return parsed_data
             return {}
 

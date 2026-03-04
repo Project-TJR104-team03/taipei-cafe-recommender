@@ -57,37 +57,26 @@ class IntentAgent(BaseAgent):
             token_info = self.model.count_tokens(full_prompt)
             input_tokens = token_info.total_tokens
 
-            # 🌟 2. 將「輸入內容」與「Token 數量」印在終端機
-            logger.info(f"==== 🟢 AI 輸入 Prompt (預估 Token: {input_tokens}) ====")
-            logger.info(full_prompt)
-            logger.info("====================================================")
+            # ✂️ [瘦身] 精簡輸入 Log
+            logger.info(f"🟢 [IntentAgent] 輸入 | 基準: {now.strftime('%Y-%m-%d %H:%M')} ({weekday_map[now.weekday()]}) | 訊息: \"{user_message}\"")
+            logger.debug(f"==== 🟢 [IntentAgent] 完整 Prompt ====\n{full_prompt}\n======================================")
 
             generation_config = GenerationConfig(
                 response_mime_type="application/json",
                 temperature=0.0
             )
 
-            # 🌟 2. 開始計時
+            # 🌟 2. 開始計時並呼叫 AI
             start_time = time.time()
-
-            response = self.model.generate_content(
-                full_prompt,
-                generation_config=generation_config
-            )
-
-            # 🌟 3. 結束計時並計算經過的秒數
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-            
-            # 🌟 3. 將 AI 的「原始輸出」印在終端機
-            logger.info(f"==== 🔵 AI 原始輸出結果(耗時: {elapsed_time:.2f} 秒) ====")
-            logger.info(response.text)
-            logger.info("============================")
+            response = self.model.generate_content(full_prompt, generation_config=generation_config)
+            elapsed_time = time.time() - start_time
 
             if response.text:
                 clean_text = response.text.replace("```json", "").replace("```", "").strip()
                 result = json.loads(clean_text)
-                # logger.info(f"🤖 [Intent AI 分析結果]: {json.dumps(result, ensure_ascii=False)}")
+                
+                # ✂️ [瘦身] 將耗時、Token 與壓平後的 JSON 合併成精華一行！
+                logger.info(f"🔵 [IntentAgent] 輸出 | 耗時: {elapsed_time:.2f}s | Token: {input_tokens} | 解析: {json.dumps(result, ensure_ascii=False)}")
                 return result
             return {}
 

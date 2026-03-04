@@ -127,35 +127,23 @@ class ChatAgent(BaseAgent):
         """
 
         try:
-            # 🌟 1. 計算輸入的 Token 數量並印出完整的 Prompt
+            # 🌟 1. 計算輸入的 Token 數量
             token_info = self.model.count_tokens(prompt)
             input_tokens = token_info.total_tokens
             
-            logger.info(f"==== 🟢 [ChatAgent] AI 輸入 Prompt (預估 Token: {input_tokens}) ====")
-            logger.info(prompt)
-            logger.info("===============================================================")
+            # ✂️ [瘦身] 精簡輸入 Log，完整 Prompt 降級為 debug 備用
+            logger.info(f"🟢 [ChatAgent] 輸入 | 狀態: search_cart={current_cart_str} | 訊息: \"{user_msg}\"")
+            logger.debug(f"==== 🟢 [ChatAgent] 完整 Prompt ====\n{prompt}\n===================================")
 
             generation_config = GenerationConfig(
                 response_mime_type="application/json",
                 temperature=0.3 
             )
 
-            # 🌟 2. 開始計時
+            # 🌟 2. 開始計時並呼叫 AI
             start_time = time.time()
-
-            response = self.model.generate_content(
-                prompt,
-                generation_config=generation_config
-            )
-
-            # 🌟 3. 結束計時並計算經過的秒數
-            end_time = time.time()
-            elapsed_time = end_time - start_time
-
-            # 🌟 2. 將 AI 的「原始輸出」印在終端機
-            logger.info(f"==== 🔵 [ChatAgent] AI 原始輸出結果(耗時: {elapsed_time:.2f} 秒)  ====")
-            logger.info(response.text)
-            logger.info("========================================")
+            response = self.model.generate_content(prompt, generation_config=generation_config)
+            elapsed_time = time.time() - start_time
             
             clean_text = response.text.replace("```json", "").replace("```", "").strip()
             result = json.loads(clean_text)
@@ -177,7 +165,8 @@ class ChatAgent(BaseAgent):
                         filtered_cart.append(t)
                 result["updated_cart"] = filtered_cart
                 
-            logger.info(f"🤖 [ChatAgent 終極解析]: {json.dumps(result, ensure_ascii=False)}")
+            # ✂️ [瘦身] 將耗時、Token 與壓平後的 JSON 合併成精華一行！
+            logger.info(f"🔵 [ChatAgent] 輸出 | 耗時: {elapsed_time:.2f}s | Token: {input_tokens} | 解析: {json.dumps(result, ensure_ascii=False)}")
             return result
             
         except Exception as e:
