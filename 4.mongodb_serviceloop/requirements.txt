@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+line-bot-sdk
+pymongo
+google-genai
+google-cloud-aiplatform
+geopy
+python-dotenv
+pydantic
+certifi
