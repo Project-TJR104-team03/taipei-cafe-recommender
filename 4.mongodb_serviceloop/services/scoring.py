@@ -195,6 +195,11 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
         # 2. 真實營業時間
         hours_until_close = get_hours_until_close(item.get('opening_hours', {}))
         
+        # 加固防線：
+        # 條件 1：不是找特定店名、條件 2：沒有「深夜」或「指定時間」的免死金牌、條件 3：目前沒營業
+        if item.get('match_type') != 'name' and not ignore_time_penalty and hours_until_close <= 0:
+            continue
+
         # 3. 互動數據
         stats = item.get('stats', {})
         clicks, keeps, dislikes = stats.get('clicks', 0), stats.get('keeps', 0), stats.get('dislikes', 0)
