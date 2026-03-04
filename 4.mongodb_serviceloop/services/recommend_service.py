@@ -396,7 +396,7 @@ class RecommendService:
                         
                         logger.info("⚡ 啟動平行檢索 (Macro + Micro)...")
                         task_macro = asyncio.to_thread(lambda: list(db['cafes'].aggregate(pipeline_macro)))
-                        task_micro = asyncio.to_thread(lambda: list(db['reviews'].aggregate(pipeline_micro)))
+                        task_micro = asyncio.to_thread(lambda: list(db['AI_embedding'].aggregate(pipeline_micro)))
                         macro_results, micro_results = await asyncio.gather(task_macro, task_micro)
                         
                         logger.info(f"📦 檢索完成: 總結命中 {len(macro_results)} 筆, 評論命中 {len(micro_results)} 筆")
