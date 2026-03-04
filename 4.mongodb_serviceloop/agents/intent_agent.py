@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from agents.base_agent import BaseAgent
 from vertexai.generative_models import GenerationConfig 
+from utils import get_taiwan_now
 
 logger = logging.getLogger("Coffee_Recommender")
 
@@ -38,7 +39,7 @@ class IntentAgent(BaseAgent):
     def analyze_user_intent(self, user_message: str) -> dict:
         if not self.model: return {}
 
-        now = datetime.now() 
+        now = get_taiwan_now() 
         weekday_map = ["一", "二", "三", "四", "五", "六", "日"]
         
         dynamic_system_prompt = USER_INTENT_SYSTEM_PROMPT_TEMPLATE.format(

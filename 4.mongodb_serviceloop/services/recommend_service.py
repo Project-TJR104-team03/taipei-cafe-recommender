@@ -7,14 +7,14 @@ from typing import Any, Dict, List, Optional
 import json
 from vertexai.language_models import TextEmbeddingInput, TextEmbeddingModel
 from database import db_client
-from utils import is_google_period_open
+from utils import is_google_period_open, get_taiwan_now
 from locations import ALL_LOCATIONS
 from agents.intent_agent import IntentAgent
 from agents.reason_agent import ReasonAgent
 from google import genai 
 from services.scoring import process_and_score_cafes
 from datetime import datetime, timedelta  
-
+from constants import STANDARD_TAGS
 
 logger = logging.getLogger("Coffee_Recommender")
 
@@ -116,7 +116,7 @@ class RecommendService:
 
             user_loc = (current_search_lat, current_search_lng)
 
-            
+            taiwan_now = get_taiwan_now()
             # === 2. AI 意圖分析 (時間過濾) ===
             filter_open_now = False
             target_datetime = None
@@ -146,7 +146,7 @@ class RecommendService:
                     check_time = datetime.fromisoformat(target_datetime)
                     logger.info(f"🕒 [時間過濾] 依照 AI 指定時間: {check_time.strftime('%Y-%m-%d %H:%M')}")
                 except: 
-                    check_time = datetime.now()
+                    check_time = taiwan_now
             else:
             # 情況 B：沒有指定時間
                 if is_midnight_search:
@@ -154,7 +154,7 @@ class RecommendService:
                     check_time = None
                     filter_open_now = False
                 else:
-                    check_time = datetime.now()
+                    check_time = taiwan_now
                     filter_open_now = True  # 順手把狀態切為 True，維持邏輯一致性
                     logger.info(f"🕒 [時間過濾] 未指定時間，預設尋找「現在」有營業的店家: {check_time.strftime('%Y-%m-%d %H:%M')}")
             
@@ -187,7 +187,7 @@ class RecommendService:
                 user_persona = user_info.get("ai_persona", {})
 
                 # 軌道 B：48 小時冷卻名單 (Soft Ban)
-                forty_eight_hours_ago = datetime.now() - timedelta(hours=48)
+                forty_eight_hours_ago = taiwan_now - timedelta(hours=48)
                 cooldown_logs = list(db['interaction_logs'].find({
                     "user_id": user_id,
                     "action": {"$in": ["COOLDOWN", "NO_REASON", "NO"]},
@@ -266,6 +266,7 @@ class RecommendService:
                 
                 # 🛡️ [神級防呆 3：氾濫單字黑名單]
                 forbidden_exact_words = {"cafe", "coffee", "咖啡", "咖啡廳", "咖啡店", "店名", "餐廳", "推薦", "附近", "台北"}
+                forbidden_exact_words.update(STANDARD_TAGS) # ✨ 把「甜點、簡餐、不限時」等通用標籤通通加入黑名單！
                 logger.info(f"🔎 [Path 0] 準備比提這些可能店名: {search_names}")
                 
                 # 🌟 [神級進化 2：模糊比對正則魔法]
@@ -440,12 +441,19 @@ class RecommendService:
                     user_loc=(current_search_lat, current_search_lng),
                     user_id=user_id,
                     rejected_tags=rejected_tags,
-                    ignore_time_penalty=ignore_time,
                     user_persona=user_persona
                 )
                 logger.info(f"🏆 算分完成！最終選出 {len(final_data)} 家推薦名單。")
 
-
+            # 🌟 [新增] 深夜/防呆反問信號攔截點！
+            # 如果經過所有過濾與算分後，一家店都不剩：
+            if not final_data:
+                if taiwan_now.hour >= 22 or taiwan_now.hour <= 5:
+                    logger.warning("🌙 深夜附近全關門了，準備回傳反問信號。")
+                    return {"data": [], "center_lat": current_search_lat, "center_lng": current_search_lng, "is_midnight_empty": True}
+                else:
+                    logger.warning("🏜️ 條件太嚴苛或太偏僻，回傳一般防呆信號。")
+                    return {"data": [], "center_lat": current_search_lat, "center_lng": current_search_lng, "is_midnight_empty": False}
 
             # === 🔥 [新增] 標籤動態排序與視覺化處理 ===
             def process_display_tags(raw_tags, query_text, btn_tag):
