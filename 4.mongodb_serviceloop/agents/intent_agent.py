@@ -31,7 +31,7 @@ USER_INTENT_SYSTEM_PROMPT_TEMPLATE = """
     "has_time": true 或 false,
     "target_time": "YYYY-MM-DD HH:MM", 
     "time_flexibility": "使用者提到的原始時間字眼，例如: 明天早上10點以後",
-    "intents": ["提取出的其他需求", "例如: 親子友善"]
+    "intents": ["提取出的具體需求、地點或店名", "例如: 親子友善", "星巴克", "士林"]
 }}
 """
 

@@ -66,6 +66,7 @@ class ChatAgent(BaseAgent):
 
         情況 B：使用者純粹閒聊或跨日反問 (Chat Mode)
         - 劇本 D【跨日反問 (ask_restore)】：目前 current_cart 是空的，但 last_session_cart 有東西，且使用者輸入破碎條件（如：「有賣甜點的嗎」）。親切反問是否要延續昨天條件。
+           - ⚠️ 記憶暫存鐵律：你必須將使用者「剛剛輸入的新條件」放進 updated_cart 暫存，絕對不可以回傳空陣列 []，否則你會忘記他剛剛的需求！
         - 劇本 E【純閒聊 (none)】：抱怨天氣、閒聊廢話。購物車保持原樣 (none)。
            - 🗣️ 語氣指令：把使用者當朋友，用愛喝咖啡的吃貨口吻瞎扯。
 
@@ -112,7 +113,7 @@ class ChatAgent(BaseAgent):
         範例四 (劇本D：跨日反問)
         - 狀態：current_cart=[], last_session_cart=["信義區", "插座"]
         - 使用者：「有賣甜點的嗎」
-        - 你的輸出：{{"mode": "chat", "reply": "歡迎回來！您是要找昨天『信義區+有插座』附近，而且有賣甜點的咖啡廳嗎？還是今天要換個地方找呢？🍰", "opening": "", "closing": "", "keyword": "", "tags": [], "cart_action": "ask_restore", "updated_cart": []}}
+        - 你的輸出：{{"mode": "chat", "reply": "歡迎回來！您是要找昨天『信義區+有插座』附近，而且有賣甜點的咖啡廳嗎？還是今天要換個地方找呢？🍰", "opening": "", "closing": "", "keyword": "", "tags": [], "cart_action": "ask_restore", "updated_cart": ["甜點"]}}
         
         範例五 (劇本B：地點替換)
         - 狀態：current_cart=["忠孝復興", "安靜", "早上9點營業"]
