@@ -1,6 +1,7 @@
 # app/agents/chat_agent.py
 import json
 import logging
+import time
 from agents.base_agent import BaseAgent
 from vertexai.generative_models import GenerationConfig 
 from constants import STANDARD_TAGS
@@ -126,15 +127,35 @@ class ChatAgent(BaseAgent):
         """
 
         try:
+            # 🌟 1. 計算輸入的 Token 數量並印出完整的 Prompt
+            token_info = self.model.count_tokens(prompt)
+            input_tokens = token_info.total_tokens
+            
+            logger.info(f"==== 🟢 [ChatAgent] AI 輸入 Prompt (預估 Token: {input_tokens}) ====")
+            logger.info(prompt)
+            logger.info("===============================================================")
+
             generation_config = GenerationConfig(
                 response_mime_type="application/json",
                 temperature=0.3 
             )
 
+            # 🌟 2. 開始計時
+            start_time = time.time()
+
             response = self.model.generate_content(
                 prompt,
                 generation_config=generation_config
             )
+
+            # 🌟 3. 結束計時並計算經過的秒數
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+
+            # 🌟 2. 將 AI 的「原始輸出」印在終端機
+            logger.info(f"==== 🔵 [ChatAgent] AI 原始輸出結果(耗時: {elapsed_time:.2f} 秒)  ====")
+            logger.info(response.text)
+            logger.info("========================================")
             
             clean_text = response.text.replace("```json", "").replace("```", "").strip()
             result = json.loads(clean_text)

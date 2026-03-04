@@ -25,6 +25,7 @@ GCS_RAW_STORE_PATH = os.getenv("GCS_RAW_STORE_PATH")
 GCS_EMBEDDING_RESULTS_FOLDER = os.getenv("GCS_EMBEDDING_RESULTS_FOLDER") # 指向 Vertex AI 產出的母目錄
 GCS_SCORED_FILE_PATH = os.getenv("GCS_FINAL_SCORED_PATH") # 指向 Stage B 的產出
 GCS_NAME_CLEAN_PATH = os.getenv("GCS_NAME_CLEAN_PATH", "transform/stage0/name_clean_finished.csv")
+GCS_CHAIN_MAPPING_PATH = os.getenv("GCS_CHAIN_MAPPING_PATH", "transform/stage0/config/chain_store_mapping.json")
 GCS_STORE_DYNAMIC_PATH = os.getenv("GCS_STORE_DYNAMIC_PATH", "raw/store_dynamic/store_dynamic.csv")
 GCS_SCENARIO_CSV_PATH = os.getenv("GCS_SCENARIO_CSV_PATH", "transform/stageB/cafes_with_scenarios_final.csv")
 
@@ -149,6 +150,22 @@ class MongoFinalIngestor:
         
         # 轉為 O(1) 尋找的 Hash Map
         return {str(row['place_id']): row for _, row in df.iterrows() if pd.notna(row.get('place_id'))}
+    
+    def _load_chain_mapping(self, config_path):
+        """[架構師優化]：載入連鎖品牌正規化字典"""
+        logger.info(f"📂 正在載入連鎖品牌正規化字典: {config_path}")
+        blob = self.bucket.blob(config_path)
+        
+        if not blob.exists():
+            logger.warning(f"⚠️ 找不到正規化字典 {config_path}，將維持原始店名不轉換。")
+            return {}
+            
+        try:
+            content = blob.download_as_text(encoding='utf-8')
+            return json.loads(content)
+        except Exception as e:
+            logger.error(f"❌ 解析正規化字典失敗: {e}")
+            return {}
 
 
     def process_and_upload(self, gcs_base_csv_path, gcs_vector_folder, gcs_scored_path, gcs_scenario_csv_path):
@@ -185,6 +202,7 @@ class MongoFinalIngestor:
             name_clean_map = self._load_csv_to_map(GCS_NAME_CLEAN_PATH)
             dynamic_map = self._load_csv_to_map(GCS_STORE_DYNAMIC_PATH)
             scenario_map = self._load_csv_to_map(gcs_scenario_csv_path)
+            chain_mapping = self._load_chain_mapping(GCS_CHAIN_MAPPING_PATH)
         except Exception as e:
             logger.error(f"❌ 讀取基礎 CSV 失敗: {e}")
             return
@@ -281,11 +299,17 @@ class MongoFinalIngestor:
                             rating_val = dyn_data.get('rating')
                             review_count = dyn_data.get('user_ratings_total')
 
+                            # --- [字典轉換邏輯] ---
+                            # 1. 先取得原始清洗後的店名
+                            raw_final_name = str(clean_data.get('final_name')) if pd.notna(clean_data.get('final_name')) else str(phys_data.get('name'))
+                            # 2. 查字典：如果在字典裡就轉換，不在就保持原樣 (使用 dict.get 的預設值特性)
+                            final_name = chain_mapping.get(raw_final_name, raw_final_name)
+
                             # --- 組裝終極版 Schema (對齊 v1.2) ---
                             store_node = {
                                 "place_id": place_id,
                                 "original_name": str(phys_data.get('name', ai_data.get('place_name'))),
-                                "final_name": str(clean_data.get('final_name')) if pd.notna(clean_data.get('final_name')) else str(phys_data.get('name')),
+                                "final_name": final_name,
                                 "branch": str(clean_data.get('branch_y')) if pd.notna(clean_data.get('branch_y')) else "0",
                                 #四大類別的分數與標籤
                                 "score_workspace": float(scene_data.get("score_workspace", 0.0)) if pd.notna(scene_data.get("score_workspace")) else 0.0,
