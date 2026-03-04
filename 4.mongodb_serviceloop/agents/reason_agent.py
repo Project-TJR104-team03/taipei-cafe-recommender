@@ -40,7 +40,7 @@ class ReasonAgent(BaseAgent):
         for c in cafes:
             info = c.get("matched_review", "") 
             if not info:
-                info = c.get("summary", c.get("scores", {}).get("summary", ""))
+                info = c.get("summary", "")
             
             tags = c.get("tags", [])
             if not tags and "ai_tags" in c:

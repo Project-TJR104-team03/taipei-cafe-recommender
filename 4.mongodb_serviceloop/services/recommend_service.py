@@ -378,7 +378,7 @@ class RecommendService:
                                 "limit": 50,           # 🔽 從 100 降到 50
                                 "filter": {"place_id": {"$in": valid_place_ids}} # ✨ 關鍵魔法：前置過濾
                             }},
-                            {"$project": {"place_id": 1, "macro_score": { "$meta": "vectorSearchScore" }, "summary": "$scores.summary"}}
+                            {"$project": {"place_id": 1, "macro_score": { "$meta": "vectorSearchScore" }, "summary": "$summary"}}
                         ]
                         
                         pipeline_micro = [
@@ -418,7 +418,7 @@ class RecommendService:
                             pid = cafe_info["place_id"]
                             fusion_data_item = fusion_dict[pid]
                             cafe_info['vector_score'] = (fusion_data_item["macro_score"] * 0.4) + (fusion_data_item["micro_score"] * 0.6)
-                            cafe_info['summary'] = fusion_data_item["summary"] if fusion_data_item["summary"] else cafe_info.get("scores", {}).get("summary", "")
+                            cafe_info['summary'] = fusion_data_item["summary"] if fusion_data_item["summary"] else cafe_info.get("summary", "")
                             cafe_info['matched_review'] = fusion_data_item["matched_review"]
                             cafe_info['match_type'] = 'vector' 
                             raw_results.append(cafe_info)
