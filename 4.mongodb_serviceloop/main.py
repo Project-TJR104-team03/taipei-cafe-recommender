@@ -19,6 +19,7 @@ from linebot.models import (
 )
 from dotenv import load_dotenv
 import vertexai
+from utils import get_taiwan_now
 
 # 🔥 處理時間狀態
 from datetime import datetime, timedelta
@@ -661,7 +662,7 @@ async def background_handle_text(event):
 
         # ⏳ 2. 逾時檢查 (Timeout Reset)：超過 4 小時自動移至備份車
         if last_updated:
-            if datetime.now() - last_updated > timedelta(minutes=30):
+            if get_taiwan_now() - last_updated > timedelta(minutes=30):
                 if current_cart:
                     last_session_cart = current_cart # 備份昨日條件
                 current_cart = []

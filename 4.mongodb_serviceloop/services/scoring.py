@@ -140,7 +140,7 @@ def get_hours_until_close(opening_hours: dict) -> float:
     periods = opening_hours.get('periods', [])
     if not periods: return 3.0
     
-    tw_now = get_taiwan_now() + timedelta(hours=8)
+    tw_now = get_taiwan_now()
     current_iso = tw_now.isoweekday()
     current_day = 0 if current_iso == 7 else current_iso
     current_mins = current_day * 24 * 60 + tw_now.hour * 60 + tw_now.minute
