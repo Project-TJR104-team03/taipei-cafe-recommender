@@ -3,6 +3,7 @@ import math
 from datetime import datetime, timedelta
 from geopy.distance import geodesic
 from locations import ALL_LOCATIONS
+from utils import get_taiwan_now
 
 def calculate_comprehensive_score(
     vec_score: float,             # 1. 向量相似度 (0.0 ~ 1.0)
@@ -139,7 +140,7 @@ def get_hours_until_close(opening_hours: dict) -> float:
     periods = opening_hours.get('periods', [])
     if not periods: return 3.0
     
-    tw_now = datetime.utcnow() + timedelta(hours=8)
+    tw_now = get_taiwan_now() + timedelta(hours=8)
     current_iso = tw_now.isoweekday()
     current_day = 0 if current_iso == 7 else current_iso
     current_mins = current_day * 24 * 60 + tw_now.hour * 60 + tw_now.minute
@@ -192,10 +193,7 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
             continue 
         
         # 2. 真實營業時間
-        if ignore_time_penalty:
-            hours_until_close = 3.0 
-        else:
-            hours_until_close = get_hours_until_close(item.get('opening_hours', {}))
+        hours_until_close = get_hours_until_close(item.get('opening_hours', {}))
         
         # 3. 互動數據
         stats = item.get('stats', {})
