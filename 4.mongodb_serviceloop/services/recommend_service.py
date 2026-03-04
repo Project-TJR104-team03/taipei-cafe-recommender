@@ -370,22 +370,34 @@ class RecommendService:
                     if query_vector:
                         # 故意把向量搜尋的範圍拉大 (numCandidates: 200, limit: 100)
                         pipeline_macro = [
-                            {"$vectorSearch": {"index": "vector_index", "path": "vector", "queryVector": query_vector, "numCandidates": 200, "limit": 100}},
-                            # 🌟 最關鍵的一行：Post-filtering (後置過濾)，只留下剛剛 Path B 找出來的那些店！
-                            {"$match": {"place_id": {"$in": valid_place_ids}}},
-                            {"$project": {"place_id": 1, "macro_score": { "$meta": "vectorSearchScore" }, "summary": "$scores.summary"}}
+                            {"$vectorSearch": {
+                                "index": "vector_index", 
+                                "path": "vector", 
+                                "queryVector": query_vector, 
+                                "numCandidates": 100,  # 🔽 從 200 降到 100
+                                "limit": 50,           # 🔽 從 100 降到 50
+                                "filter": {"place_id": {"$in": valid_place_ids}} # ✨ 關鍵魔法：前置過濾
+                            }},
+                            {"$project": {"place_id": 1, "macro_score": { "$meta": "vectorSearchScore" }, "summary": "$summary"}}
                         ]
                         
                         pipeline_micro = [
-                            {"$vectorSearch": {"index": "vector_index", "path": "embedding", "queryVector": query_vector, "numCandidates": 200, "limit": 100}},
-                            {"$match": {"place_id": {"$in": valid_place_ids}}},
+                            {"$vectorSearch": {
+                                "index": "vector_index", 
+                                "path": "embedding", 
+                                "queryVector": query_vector, 
+                                "numCandidates": 100, 
+                                "limit": 50,
+                                "filter": {"place_id": {"$in": valid_place_ids}} # ✨ 關鍵魔法：前置過濾
+                            }},
                             {"$project": {"place_id": 1, "micro_score": { "$meta": "vectorSearchScore" }, "matched_review": "$content"}}
                         ]
-                        async def fetch_macro(): return list(db['cafes'].aggregate(pipeline_macro))
-                        async def fetch_micro(): return list(db['reviews'].aggregate(pipeline_micro))
-
+                        
                         logger.info("⚡ 啟動平行檢索 (Macro + Micro)...")
-                        macro_results, micro_results = await asyncio.gather(fetch_macro(), fetch_micro())
+                        task_macro = asyncio.to_thread(lambda: list(db['cafes'].aggregate(pipeline_macro)))
+                        task_micro = asyncio.to_thread(lambda: list(db['reviews'].aggregate(pipeline_micro)))
+                        macro_results, micro_results = await asyncio.gather(task_macro, task_micro)
+                        
                         logger.info(f"📦 檢索完成: 總結命中 {len(macro_results)} 筆, 評論命中 {len(micro_results)} 筆")
 
                         fusion_dict = {}
@@ -406,7 +418,7 @@ class RecommendService:
                             pid = cafe_info["place_id"]
                             fusion_data_item = fusion_dict[pid]
                             cafe_info['vector_score'] = (fusion_data_item["macro_score"] * 0.4) + (fusion_data_item["micro_score"] * 0.6)
-                            cafe_info['summary'] = fusion_data_item["summary"] if fusion_data_item["summary"] else cafe_info.get("scores", {}).get("summary", "")
+                            cafe_info['summary'] = fusion_data_item["summary"] if fusion_data_item["summary"] else cafe_info.get("summary", "")
                             cafe_info['matched_review'] = fusion_data_item["matched_review"]
                             cafe_info['match_type'] = 'vector' 
                             raw_results.append(cafe_info)

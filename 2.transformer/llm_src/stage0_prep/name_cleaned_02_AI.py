@@ -27,16 +27,20 @@ vertexai.init(project=PROJECT_ID, location=LOCATION)
 model = GenerativeModel(MODEL_NAME)
 generation_config = GenerationConfig(
     response_mime_type="application/json",
-    temperature=0.0 
+    temperature=0.0,
+    top_p=0.95
 )
 def ai_cleaner_batch(model, batch_data):
     """呼叫 AI 進行批次清洗"""
     prompt = f"""
     你是一位台灣咖啡廳資料專家。請根據提供資訊，拆分「品牌主體」與「分店名」。
     規則：
-    1. final_name：品牌主體。若 regex_name 誤切，請參考 original 找回完整名稱。
+    1. final_name：品牌主體。
+        👉 **【重要：連鎖品牌正規化】若為知名連鎖品牌，請一律轉換為最簡潔的中文官方名稱（例如：將「STARBUCKS 星巴克」或「Starbucks」統一輸出為「星巴克」；將「LOUISA COFFEE」統一為「路易莎咖啡」）。**
+        若 regex_name 誤切，請參考 original 找回完整名稱。
     2. branch：識別地理位置或編號（如：南京、2、二店）。若 tags 中有分店資訊請提取。
-    3. 雜訊：移除廣告詞、SEO關鍵字、表情符號及括號。
+    3. 絕對禁止將分店資訊(如地區、路段、編號)保留在final_name中，必須嚴格拆分至branch
+    4. 雜訊：移除廣告詞、SEO關鍵字、表情符號及括號。
     待處理資料：{json.dumps(batch_data, ensure_ascii=False)}
     輸出格式：JSON List [{{ "place_id": "...", "final_name": "...", "branch": "..." }}]
     """
