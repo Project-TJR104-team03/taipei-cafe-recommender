@@ -430,7 +430,7 @@ class RecommendService:
 
                 if not final_candidates and base_candidates:
                     logger.info("⚠️ 跳過向量搜尋，直接使用地理與標籤篩選結果")
-                    final_candidates = base_candidates
+                    final_candidates = filter_by_opening_hours(base_candidates)
 
             # 🌟🌟🌟 === 終極交接：呼叫外部的統一算分漏斗 === 🌟🌟🌟
             if not theme: # 🛡️ 防護罩 4：情境搜尋已經自己排好前10名，不需要過這個漏斗！
@@ -441,6 +441,7 @@ class RecommendService:
                     user_loc=(current_search_lat, current_search_lng),
                     user_id=user_id,
                     rejected_tags=rejected_tags,
+                    ignore_time_penalty=ignore_time,
                     user_persona=user_persona
                 )
                 logger.info(f"🏆 算分完成！最終選出 {len(final_data)} 家推薦名單。")

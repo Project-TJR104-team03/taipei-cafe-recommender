@@ -2,6 +2,7 @@
 import logging
 from datetime import datetime
 from database import db_client
+from utils import get_taiwan_now
 
 logger = logging.getLogger("Coffee_Recommender")
 
@@ -18,7 +19,7 @@ class UserService:
     def update_user_location(self, user_id: str, lat: float, lng: float, tag: str = None):
         """更新使用者位置與偏好"""
         db = db_client.get_db()
-        current_time = datetime.now()
+        current_time = get_taiwan_now()
         
         update_data = {"lat": lat, "lng": lng, "updated_at": current_time}
         if tag:
@@ -61,7 +62,7 @@ class UserService:
             "lat": lat, 
             "lng": lng, 
             "metadata": metadata, 
-            "created_at_server": datetime.now()
+            "created_at_server": get_taiwan_now()
         }
         
         db['interaction_logs'].insert_one(doc)
@@ -138,7 +139,7 @@ class UserService:
                 "chat_window": chat_window,
                 "search_cart": search_cart,
                 "last_session_cart": last_session_cart,
-                "last_updated_at": datetime.now()  # 更新時間戳記
+                "last_updated_at": get_taiwan_now()  # 更新時間戳記
             }},
             upsert=True
         )
