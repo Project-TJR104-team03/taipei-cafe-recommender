@@ -1,10 +1,14 @@
 # app/utils.py
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 # 注意這裡的引用路徑
 from locations import ALL_LOCATIONS 
 
 logger = logging.getLogger("Coffee_Recommender")
+
+def get_taiwan_now() -> datetime:
+    """取得台灣當前時間 (全系統統一標準 UTC+8)"""
+    return datetime.utcnow() + timedelta(hours=8)
 
 def is_google_period_open(periods: list, target_dt: datetime) -> bool:
     """

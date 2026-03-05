@@ -19,6 +19,7 @@ from linebot.models import (
 )
 from dotenv import load_dotenv
 import vertexai
+from utils import get_taiwan_now
 
 # 🔥 處理時間狀態
 from datetime import datetime, timedelta
@@ -378,12 +379,43 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
         user_service.update_user_location(user_id, new_lat, new_lng)
         print(f"📍 [狀態更新] 已將使用者 {user_id} 的錨點固定至 ({new_lat}, {new_lng})")
 
+   # 🌟 [新增] 全面防呆攔截機制 (取代原本的 Mock 測試資料)
    if not cafe_list:
-        print("💡 查無資料，啟動備援模式")
-        cafe_list = [
-            {"final_name": "測試用咖啡 (Mock)", "place_id": "mock_001", "rating": 4.8, "dist_meters": 150, "ai_tags": [{"tag": "測試"}]},
-            {"final_name": "路易莎 (備援)", "place_id": "mock_002", "rating": 4.2, "dist_meters": 300, "attributes": {"types": ["chain"]}}
-        ]
+            from linebot.models import MessageAction
+            
+            if result.get("is_midnight_empty"):
+                # 情境 A：深夜全關門 (22:00 - 06:00)
+                logger.warning("🌙 觸發深夜防呆，回傳反問訊息")
+                reply_text = (
+                    "🌙 目前這個時間，附近的咖啡廳大多沒有營業歐！\n\n"
+                    "還是您想先找其他時間要去的店呢？\n"
+                    "(可以直接跟我說，例如：『改找明天下午』☕)\n\n"
+                    "如果現在一定要去，建議您可以點擊下方『📍重新定位』，換到比較熱鬧的市區找找看深夜咖啡廳喔！"
+                )
+
+            else:
+                # 情境 B：太偏僻或條件太嚴苛 (單純找不到店)
+                logger.warning("🏜️ 查無店家，觸發一般防呆機制")
+                # 動態抓取使用者當下的條件 (過濾掉系統預設的"熱門")
+                current_condition = user_query if user_query and user_query != "熱門" else (tag if tag else "您的條件")
+                reply_text = (
+                    f"😅 哎呀，附近找不到完全符合【 {current_condition} 】的咖啡廳...\n\n"
+                    "可能是附近剛好沒有店家，或是條件太嚴格了。您可以直接打字跟我說：\n"
+                    "👉 『換去中山站』 (轉移陣地)\n"
+                    "👉 『那只要不限時就好』 (減少條件)\n"
+                    "👉 『重置』 (全部清空重來)\n\n"
+                    "或是點擊下方按鈕換個地點找找看👇"
+                )
+                
+            try:
+                line_bot_api.reply_message(
+                    reply_token,
+                    TextSendMessage(text=reply_text, quick_reply=get_standard_quick_reply())
+                )
+            except LineBotApiError as e:
+                logger.warning(f"⚠️ 傳送失敗: {e.message}")
+                
+            return # 🌟 找不到店就直接 return，終止後續的出菜流程！    
     
     # 🌟 [新增] 依據預設情境權重 (SCENARIO_CONFIG) 組合專屬開場白
    if theme and not opening:
@@ -630,7 +662,7 @@ async def background_handle_text(event):
 
         # ⏳ 2. 逾時檢查 (Timeout Reset)：超過 4 小時自動移至備份車
         if last_updated:
-            if datetime.now() - last_updated > timedelta(minutes=30):
+            if get_taiwan_now() - last_updated > timedelta(minutes=30):
                 if current_cart:
                     last_session_cart = current_cart # 備份昨日條件
                 current_cart = []
