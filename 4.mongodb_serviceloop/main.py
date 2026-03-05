@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from urllib.parse import quote
 
 from fastapi import FastAPI, Request, Header, HTTPException
+from pydantic import BaseModel
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import (
@@ -53,6 +54,49 @@ async def lifespan(app: FastAPI):
     db_client.close()
 
 app = FastAPI(lifespan=lifespan)
+
+
+#=== 專供 AI 模擬測試機使用的資料結構與端點 ===
+class SimulatorRequest(BaseModel):
+    user_id: str
+    location: list[float]  # 格式預期為 [經度 lng, 緯度 lat]
+    query: str
+
+@app.post("/api/search")
+async def ai_simulator_search(req: SimulatorRequest):
+    try:
+        # 模擬器傳入的是 [lng, lat]
+        lng = req.location[0]
+        lat = req.location[1]
+        
+        # 繞過 LINE 的 UI 封裝，直接呼叫核心推薦引擎
+        result = await recommend_service.recommend(
+            lat=lat, 
+            lng=lng, 
+            user_id=req.user_id, 
+            user_query=req.query
+        )
+        
+        cafe_list = result.get("data", [])
+        
+        # 將推薦結果轉為模擬器需要的輕量 JSON 格式
+        formatted_data = []
+        for cafe in cafe_list:
+            dist_m = cafe.get('dist_meters', 0)
+            formatted_data.append({
+                "_id": cafe.get("place_id", "N/A"),
+                "name": cafe.get("final_name", cafe.get("original_name", "未知店家")),
+                "distance_km": round(dist_m / 1000, 2),
+                "tags": cafe.get('display_tags', [])
+            })
+            
+        return {
+            "status": "success",
+            "data": formatted_data
+        }
+    except Exception as e:
+        logger.error(f"❌ 模擬器請求失敗: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 line_bot_api = LineBotApi(os.getenv('LINE_CHANNEL_ACCESS_TOKEN'))
 handler = WebhookHandler(os.getenv('LINE_CHANNEL_SECRET'))
