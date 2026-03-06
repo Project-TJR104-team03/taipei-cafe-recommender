@@ -135,31 +135,54 @@ def calculate_comprehensive_score(
     
     w_vec_100, w_qual_100, w_loc_100, w_pers_100 = round(w_vec*100), round(w_qual*100), round(w_loc*100), round(w_pers*100)
 
-    details_str = f"意圖符合 {pt_vec}/{w_vec_100}, 評價營業 {pt_qual}/{w_qual_100}, 距離 {pt_loc}/{w_loc_100}, 個人偏好 {pt_pers}/{w_pers_100}"
-    if penalty < 1.0: details_str += f", 冷卻懲罰 x{penalty}"
+    match_pref_str = "/".join(list(set(user_persona.get("preferred_tags", [])) & set(cafe_tags))) if user_persona and cafe_tags else ""
+    match_avoid_str = "/".join(list(set(user_persona.get("avoid_tags", [])) & set(cafe_tags))) if user_persona and cafe_tags else ""
+
+    mrt_bonus_val = mrt_bonus if 'mrt_bonus' in locals() else 0.0
+
+    details_dict = {
+        "pt_vec": pt_vec, "w_vec_100": w_vec_100,
+        "pt_qual": pt_qual, "w_qual_100": w_qual_100,
+        "pt_loc": pt_loc, "w_loc_100": w_loc_100,
+        "pt_pers": pt_pers, "w_pers_100": w_pers_100,
+        "bayesian_rating": round(bayesian_rating, 1),
+        "original_rating": rating,
+        "total_reviews": total_reviews,
+        "hours_until_close": round(hours_until_close, 1),
+        "dist_meters": int(dist_meters),
+        "s_geo_abs": round(s_geo_abs, 2),
+        "mrt_bonus": round(mrt_bonus_val, 2),
+        "mrt_dist": int(dist_to_nearest_mrt),
+        "match_pref": match_pref_str if match_pref_str else "無",
+        "match_avoid": match_avoid_str if match_avoid_str else "無",
+        "p_cold": p_cold,
+        "has_disliked_features": has_disliked_features,
+        "penalty": penalty
+    }
 
     # ✨ 改為回傳 dict
     return {
         "raw_score": final_raw,
         "ui_score": ui_score,
-        "details_str": details_str
+        "details_dict": details_dict
     }
 
 # =====================================================================
 # 🌟 [新增] 推薦引擎專用的算分輔助模組 (從 recommend_service 抽離)
 # =====================================================================
 
-def get_hours_until_close(opening_hours: dict) -> float:
+def get_hours_until_close(opening_hours: dict, target_time: datetime = None) -> float:
     if not opening_hours: return 3.0 
     if opening_hours.get('is_24_hours'): return 24.0
     
     periods = opening_hours.get('periods', [])
     if not periods: return 3.0
     
-    tw_now = get_taiwan_now()
-    current_iso = tw_now.isoweekday()
+    # 如果有傳入目標時間，就用目標時間；否則用現在時間
+    ref_time = target_time if target_time else get_taiwan_now()
+    current_iso = ref_time.isoweekday()
     current_day = 0 if current_iso == 7 else current_iso
-    current_mins = current_day * 24 * 60 + tw_now.hour * 60 + tw_now.minute
+    current_mins = current_day * 24 * 60 + ref_time.hour * 60 + ref_time.minute
     
     for p in periods:
         open_day = int(p.get('day', 0))
@@ -191,7 +214,7 @@ def get_hours_until_close(opening_hours: dict) -> float:
             
     return 0.0 
 
-def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rejected_tags: list, ignore_time_penalty: bool = False, user_persona: dict = None) -> list:
+def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rejected_tags: list, ignore_time_penalty: bool = False, user_persona: dict = None, recommend_history: dict = None, target_time: datetime = None) -> list:
     """
     統一算分漏斗：無論是哪一條路徑找出的店，都必須經過這裡進行真實數據清洗與算分！
     """
@@ -208,13 +231,22 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
         if dist_meters > 5000 and item.get('match_type') != 'name': 
             continue 
         
-        # 2. 真實營業時間
-        hours_until_close = get_hours_until_close(item.get('opening_hours', {}))
+        # 2. 傳入目標時間進行精算
+        hours_until_close = get_hours_until_close(item.get('opening_hours', {}), target_time)
         
+        # 如果是純粹的「深夜免死金牌」(無指定未來時間)，無條件給予時間滿分，不懲罰！
+        if ignore_time_penalty and not target_time: 
+            hours_until_close = 3.0
+
         # 加固防線：
         # 條件 1：不是找特定店名、條件 2：沒有「深夜」或「指定時間」的免死金牌、條件 3：目前沒營業
         if item.get('match_type') != 'name' and not ignore_time_penalty and hours_until_close <= 0:
             continue
+
+        # 正確從資料庫結構中挖出星星與評論數，並存入 item 中
+        db_ratings = item.get("ratings", {})
+        item['real_rating'] = db_ratings.get("rating", item.get("rating", 0.0))
+        item['real_reviews'] = db_ratings.get("review_amount", item.get("user_ratings_total", item.get("total_ratings", 0)))
 
         # 3. 互動數據
         stats = item.get('stats', {})
@@ -244,6 +276,9 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
         if rejected_tags:
             if set(rejected_tags) & set(cafe_tags): has_disliked_features = True
 
+        # 🌟 取出該店家的冷卻時間 (新增)
+        last_rec_hours = recommend_history.get(item.get('place_id'), float('inf')) if recommend_history else float('inf')
+
         # 6. 分流算分：判斷是「指定店名」還是「AI 推薦」
         shop_name = item.get("final_name", "未知店家")
 
@@ -253,29 +288,28 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
             open_bonus = 500.0 if hours_until_close > 0 else 0.0 
             item['search_score'] = 1000.0 - (dist_meters / 10.0) + open_bonus + 1000.0
             item['ui_score'] = 100 # 指定店名直接給 100 分
-
-            item['score_details'] = "精準店名搜尋直接滿分"
+            item['score_details_dict'] = {}
             
         else:
             # 🧠 正常 AI 推薦漏斗 (Path A / B 專屬)：
             # 乖乖跑 8 維度綜合評估大腦
             score_data = calculate_comprehensive_score(
                 vec_score=item.get('vector_score', 0.8),
-                rating=item.get('rating', 0) or 0,
-                total_reviews=item.get('total_ratings', 0),
+                rating=item.get('real_rating', 0) or 0,
+                total_reviews=item.get('real_reviews', 0),
                 dist_meters=dist_meters,
                 dist_to_nearest_mrt=mrt_dist,
                 hours_until_close=hours_until_close,
                 clicks=clicks, keeps=keeps, dislikes=dislikes,
                 is_new_user=is_new,
                 has_disliked_features=has_disliked_features,
+                last_recommended_hours=last_rec_hours,
                 user_persona=user_persona, # ✨ 傳入 Persona
                 cafe_tags=cafe_tags        # ✨ 傳入 Tags
             )
             item['search_score'] = score_data['raw_score']
             item['ui_score'] = score_data['ui_score']
-
-            item['score_details'] = score_data['details_str']
+            item['score_details_dict'] = score_data['details_dict']
             
         scored_data.append(item)
         
@@ -283,13 +317,40 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
     scored_data.sort(key=lambda x: x.get('search_score', 0), reverse=True)
     top_10_cafes = scored_data[:10]
 
-    # 只印出最終出菜的前 10 名榜單給團隊看
-    logger.info("============== 🏆 最終推薦榜單 ==============")
+    # 🌟 終極版 One-Line-Per-Category 極簡 Log
+    logger.info("============== 🏆 最終推薦榜單 (前 10 名) ==============")
     for rank, cafe in enumerate(top_10_cafes, 1):
         name = cafe.get("final_name", "未知店家")
         score = cafe.get("ui_score", 0)
-        details = cafe.get("score_details", "")
-        logger.info(f"Top {rank} | ☕ {name} | 總分: {score} ({details})")
-    logger.info("=============================================")
+        d = cafe.get("score_details_dict", {})
+        
+        if not d: 
+            logger.info(f"Top {rank} | ☕ {name} | ⭐️ 總分: {score} (精準店名直達)")
+            continue
+            
+        macro = round(cafe.get('macro_score', 0) * 100)
+        micro = round(cafe.get('micro_score', 0) * 100)
+        
+        hrs = d.get('hours_until_close', 0)
+        open_str = f"滿分(剩{hrs}h)" if hrs >= 3 else f"遞減(剩{hrs}h)"
+        if hrs >= 24: open_str = "滿分(24h)"
+        
+        pen = d.get('penalty', 1.0)
+        pen_str = "無" if pen == 1.0 else f"觸發(x{pen})"
+        
+        logger.info(f"Top {rank} | ☕ {name} | ⭐️ 總分: {score}")
+        logger.info(f" ┣ 🧠 意圖({d.get('w_vec_100',0)}%): {d.get('pt_vec',0)}分 │ 店家總結: {macro}, 網友評論: {micro}")
+        if cafe.get('match_type') == 'vector':
+            hit_review = str(cafe.get("matched_review", "")).replace("\n", " ").strip()
+            hit_rev_short = (hit_review[:45] + "...") if len(hit_review) > 45 else (hit_review or "無")
+            hit_summary = str(cafe.get("summary", "")).replace("\n", " ").strip()
+            hit_sum_short = (hit_summary[:45] + "...") if len(hit_summary) > 45 else (hit_summary or "無")
+            logger.info(f" ┣ 💬 語意擷取     │ 評: {hit_rev_short}")
+            logger.info(f" ┃                 │ 總: {hit_sum_short}")
+        logger.info(f" ┣ 🌟 評價({d.get('w_qual_100',0)}%): {d.get('pt_qual',0)}分 │ 貝氏: {d.get('bayesian_rating',0)} (原{d.get('original_rating',0)}星/{d.get('total_reviews',0)}評), 營業: {open_str}")
+        logger.info(f" ┣ 📍 地理({d.get('w_loc_100',0)}%): {d.get('pt_loc',0)}分 │ 距離: {d.get('dist_meters',0)}m(得{d.get('s_geo_abs',0)}), 捷運: {d.get('mrt_dist',0)}m(加{d.get('mrt_bonus',0)})")
+        logger.info(f" ┣ 💖 偏好({d.get('w_pers_100',0)}%): {d.get('pt_pers',0)}分 │ 命中喜好: {d.get('match_pref','無')}, 命中地雷: {d.get('match_avoid','無')}")
+        logger.info(f" ┗ 🛡️ 調整機制     │ 冷啟動: +{d.get('p_cold',0)}, 隱性地雷: {'觸發(x0.8)' if d.get('has_disliked_features') else '無'}, 冷卻期: {pen_str}")
+    logger.info("-------------------------------------------------------------")
 
     return top_10_cafes

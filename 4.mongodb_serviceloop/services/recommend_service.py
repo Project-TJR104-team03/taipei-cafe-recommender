@@ -2,7 +2,6 @@
 import logging
 import traceback
 import asyncio
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 import json
 from vertexai.language_models import TextEmbeddingInput, TextEmbeddingModel
@@ -111,7 +110,7 @@ class RecommendService:
                 
                 # 3. 如果拿掉地名和贅字後，剩下的字是空的或太短 (例如只剩標點符號)，就放棄語意搜尋
                 if not test_query or len(test_query) < 2: 
-                    logger.info(f"🧹 [字串清理] 扣除地名後剩餘 '{search_query}' 缺乏明確特徵，跳過 AI，直接交給 Path B (純地理搜尋)")
+                    logger.info(f"🧹 [字串清理] 扣除地名後剩餘 '{search_query}' 缺乏明確特徵，跳過 AI，直接交給 距離篩選 (純地理搜尋)")
                     search_query = None
 
             user_loc = (current_search_lat, current_search_lng)
@@ -205,7 +204,7 @@ class RecommendService:
             if rejected_place_id and rejected_place_id not in blacklist_ids:
                 blacklist_ids.append(rejected_place_id)
 
-            # 把負面原因加入向量搜尋 (Path A 的 Prompt Injection)
+            # 把負面原因加入向量搜尋 (向量語意搜尋/標籤篩選 的 Prompt Injection)
             if search_query and negative_reason: 
                 search_query = f"{search_query}，但請絕對避開「{negative_reason}」的特徵"
                 logger.info(f"🛡️ 觸發劇本一：加入避雷特徵的向量搜尋 -> {search_query}")
@@ -221,11 +220,11 @@ class RecommendService:
                 logger.info(f"🛡️ 觸發劇本二：提取拒絕店家的隱性特徵 -> {rejected_tags}")
 
             final_candidates = [] # 🌟 所有路徑找出來的候選名單，通通丟進這裡，先不算分！
-            # === 🔥 [新增] Path C: 情境高速公路 (分數優先) ===
+            # === 🔥 情境高速公路 (點擊四大情境按鈕時觸發) ===
             final_data = [] # 用來裝最後排好序的店家
             
             if theme:
-                logger.info(f"🚀 [Path C] 啟動情境直達車: {theme}")
+                logger.info(f"🚀 情境高速公路 : {theme}")
                 score_field = f"score_{theme}"
                 
                 pipeline_c = [
@@ -247,7 +246,7 @@ class RecommendService:
                 final_data = open_results[:10]
                 logger.info(f"🏆 情境直達車篩選完成，選出 {len(final_data)} 家神店。")
 
-            # === Path 0: 店名精準直達車 ===
+            # === 店名精準直達車 (當使用者輸入特定店名時觸發) ===
             if search_query and not theme: # 🛡️ 防護罩 1：情境搜尋直接跳過
                 import re 
                 
@@ -265,9 +264,9 @@ class RecommendService:
                 search_names = list(set(search_names))
                 
                 # 🛡️ [神級防呆 3：氾濫單字黑名單]
-                forbidden_exact_words = {"cafe", "coffee", "咖啡", "咖啡廳", "咖啡店", "店名", "餐廳", "推薦", "附近", "台北"}
+                forbidden_exact_words = {"cafe", "coffee", "咖啡", "咖啡廳", "咖啡店", "店名", "餐廳", "推薦", "附近", "台北", "熱門"}
                 forbidden_exact_words.update(STANDARD_TAGS) # ✨ 把「甜點、簡餐、不限時」等通用標籤通通加入黑名單！
-                logger.info(f"🔎 [Path 0] 準備比提這些可能店名: {search_names}")
+                logger.info(f"🔎 店名精準直達車: {search_names}")
                 
                 # 🌟 [神級進化 2：模糊比對正則魔法]
                 name_or_conditions = []
@@ -295,13 +294,13 @@ class RecommendService:
                     name_results = list(db['cafes'].aggregate(name_pipeline))
                     
                     if name_results:
-                        logger.info(f"🎯 [Path 0] 精準命中店家: {len(name_results)} 家")
+                        logger.info(f"🎯 店名精準直達車: {len(name_results)} 家")
                         for item in name_results: 
                             item['match_type'] = 'name' 
                         final_candidates = name_results
 
             if not final_candidates:
-                # === Path B + A: 先執行Tag篩選再進行向量搜尋 (雙引擎並行架構) ===
+                # === RAG (向量語意搜尋/標籤篩選) +距離篩選 ===
                 logger.info(f"🌍 [預先篩選] 啟動地理/標籤搜尋作為基底...")
                 tag_list = []
                 if cafe_tag: tag_list.extend([t.strip() for t in cafe_tag.split(",")])
@@ -363,7 +362,7 @@ class RecommendService:
                 valid_place_ids = [doc['place_id'] for doc in base_candidates]
                 logger.info(f"🛡️ [預先篩選] 成功圈出 {len(valid_place_ids)} 家符合距離與基本標籤的店家。")
 
-                # === 🎯 步驟二：再執行 Path A (從合格名單中做向量語意排序) ===
+                # === 🎯 步驟二：再執行從合格名單中做向量語意排序 ===
                 if search_query and valid_place_ids and not theme:
                     logger.info(f"🔍 [精確打擊] 在 {len(valid_place_ids)} 家合格店中，尋找最符合 '{search_query}' 的語意...")
                     query_vector = self.get_embedding(search_query)
@@ -419,6 +418,8 @@ class RecommendService:
                             pid = cafe_info["place_id"]
                             fusion_data_item = fusion_dict[pid]
                             cafe_info['vector_score'] = (fusion_data_item["macro_score"] * 0.4) + (fusion_data_item["micro_score"] * 0.6)
+                            cafe_info['macro_score'] = fusion_data_item["macro_score"] 
+                            cafe_info['micro_score'] = fusion_data_item["micro_score"]
                             cafe_info['summary'] = fusion_data_item["summary"] if fusion_data_item["summary"] else cafe_info.get("summary", "")
                             cafe_info['matched_review'] = fusion_data_item["matched_review"]
                             cafe_info['match_type'] = 'vector' 
@@ -434,17 +435,56 @@ class RecommendService:
 
             # 🌟🌟🌟 === 終極交接：呼叫外部的統一算分漏斗 === 🌟🌟🌟
             if not theme: # 🛡️ 防護罩 4：情境搜尋已經自己排好前10名，不需要過這個漏斗！
+                # ✨ 1. 喚醒冷卻機制：撈取過去 24 小時推薦過的店家
+                recommend_history = {}
+                if user_id:
+                    forty_eight_hours_ago = taiwan_now - timedelta(hours=24)
+                    recent_recommends = list(db['interaction_logs'].find({
+                        "user_id": user_id,
+                        "action": "RECOMMEND",
+                        "created_at_server": {"$gte": forty_eight_hours_ago}
+                    }, {"place_id": 1, "created_at_server": 1}))
+                    
+                    for log in recent_recommends:
+                        pid = log.get("place_id")
+                        log_time = log.get("created_at_server")
+                        if pid and log_time:
+                            hours_ago = (taiwan_now - log_time).total_seconds() / 3600.0
+                            if pid not in recommend_history or hours_ago < recommend_history[pid]:
+                                recommend_history[pid] = hours_ago
+
                 logger.info(f"🚚 準備將 {len(final_candidates)} 家候選名單送入統一算分漏斗...")
                 ignore_time = is_midnight_search or (target_datetime is not None)
+                
+                # ✨ 2. 將 recommend_history 傳入算分漏斗
                 final_data = process_and_score_cafes(
                     candidates=final_candidates,
                     user_loc=(current_search_lat, current_search_lng),
                     user_id=user_id,
                     rejected_tags=rejected_tags,
                     ignore_time_penalty=ignore_time,
-                    user_persona=user_persona
+                    user_persona=user_persona,
+                    recommend_history=recommend_history,
+                    target_time=check_time 
                 )
                 logger.info(f"🏆 算分完成！最終選出 {len(final_data)} 家推薦名單。")
+
+                # ✨ 3. 寫入新的推薦紀錄，作為下一次搜尋的冷卻依據
+                if user_id and final_data:
+                    logs_to_insert = []
+                    for r in final_data:
+                        logs_to_insert.append({
+                            "user_id": user_id,
+                            "action": "RECOMMEND",
+                            "place_id": r.get("place_id"),
+                            "created_at_server": get_taiwan_now()
+                        })
+                    if logs_to_insert:
+                        try:
+                            # 丟到背景執行寫入資料庫，完全不會卡住回傳給使用者的速度
+                            asyncio.create_task(asyncio.to_thread(db['interaction_logs'].insert_many, logs_to_insert))
+                        except Exception as e:
+                            logger.warning(f"⚠️ 寫入推薦紀錄失敗: {e}")
 
             # 🌟 [新增] 深夜/防呆反問信號攔截點！
             # 如果經過所有過濾與算分後，一家店都不剩：
