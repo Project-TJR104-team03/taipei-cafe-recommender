@@ -566,10 +566,23 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
                 {
                     "type": "text", 
                     "text": f"🏷️ {' · '.join(display_tags)}", # 🚀 統一在最前面加上一個俐落的標籤符號！
-                    "size": "xs", 
-                    "color": "#888888", 
+                    "size": "sm", 
+                    "color": "#555555", 
                     "wrap": True, 
                     "margin": "sm"
+                }
+            )
+
+        # ✨ 新增：把分數塞在標籤下面，燈泡上面！
+        ui_score = cafe.get("ui_score", 0)
+        if ui_score > 0:
+            info_box_contents.append(
+                {
+                    "type": "text",
+                    "text": f"☕ 推薦總分：{ui_score} 分",
+                    "size": "sm",        # 跟燈泡文字一樣大
+                    "color": "#555555",  # 咖啡橘色，讓它跳出來
+                    "margin": "sm"       # 與上下保持一點呼吸空間
                 }
             )
 
@@ -583,7 +596,7 @@ async def process_recommendation(reply_token, lat, lng, user_id, tag=None, user_
                     "color": "#555555",      # 顏色稍微調深一點點，增加易讀性
                     "wrap": True,            
                     "maxLines": 2,           # 🔽 既然文字變精簡了，最多顯示兩行即可
-                    "margin": "md"           
+                    "margin": "sm"           
                 }
             )
         

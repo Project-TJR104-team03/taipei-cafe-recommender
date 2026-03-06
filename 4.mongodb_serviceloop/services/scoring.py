@@ -4,6 +4,9 @@ from datetime import datetime, timedelta
 from geopy.distance import geodesic
 from locations import ALL_LOCATIONS
 from utils import get_taiwan_now
+import logging
+
+logger = logging.getLogger("Coffee_Recommender")
 
 def calculate_comprehensive_score(
     vec_score: float,             # 1. 向量相似度 (0.0 ~ 1.0)
@@ -21,10 +24,10 @@ def calculate_comprehensive_score(
     has_disliked_features: bool = False, # 🌟 新增 10. 是否帶有使用者剛剛拒絕的特徵
     user_persona: dict = None,   # ✨ 新增參數
     cafe_tags: list = None       # ✨ 新增參數
-) -> float:
+) -> dict:
     """
     計算咖啡廳推薦最終加權分數
-    支援正負向行為扣分與隱性特徵懲罰
+    支援個人化偏好匹配與隱性特徵懲罰
     """
 
     # ---------------------------------------------------------
@@ -47,31 +50,39 @@ def calculate_comprehensive_score(
     score_quality = (s_static * 0.7) + (s_time * 0.3)
 
     # ---------------------------------------------------------
-    # 維度 4~5: 綜合地理指標
+    # 維度 4~5: 綜合地理指標(線性遞減 + 捷運 Bonus)
     # ---------------------------------------------------------
-    # A. 絕對距離衰減 (1500m 為基準)
-    s_geo_abs = math.exp(-dist_meters / 1500.0)
+    # A. 絕對距離線性遞減 (以 5000m 為搜索極限)
+    # 例如：0m = 1.0分, 1000m = 0.8分, 2500m = 0.5分, 5000m = 0.0分
+    s_geo_abs = max(0.0, 1.0 - (dist_meters / 5000.0))
     
-    # B. 捷運交通便利性衰減 (500m 為基準，精華區)
-    s_geo_mrt = math.exp(-dist_to_nearest_mrt / 500.0)
+    # B. 捷運交通便利性加分 (Bonus 機制)
+    # 只要在捷運站 800m 內，最高給予 0.2 的額外加分
+    mrt_bonus = 0.0
+    if dist_to_nearest_mrt <= 800.0:
+        mrt_bonus = 0.2 * (1.0 - (dist_to_nearest_mrt / 800.0))
     
-    # 整合地理分數 (60% 看實際距離，40% 看捷運便利性)
-    score_location = (s_geo_abs * 0.6) + (s_geo_mrt * 0.4)
+    # 整合地理分數 (主距離 + 捷運加分，最高不超過 1.0)
+    score_location = min(1.0, s_geo_abs + mrt_bonus)
 
     # ---------------------------------------------------------
     # 🌟 維度 6~8: 行為指標 - 雙向平滑升級版
     # ---------------------------------------------------------
-    # 計算互動淨值 (Score_act)
-    score_act = (keeps * 3.0) + (clicks * 1.0) - (dislikes * 2.0)
+    s_personal = 0.0
     
-    # 雙向正規化公式
-    if score_act == 0:
-        s_behavior = 0.0
-    else:
-        # 取符號 (1.0 或是 -1.0)
-        sign = 1.0 if score_act > 0 else -1.0
-        # 套用平滑衰減公式 (確保分數界於 -1.0 ~ 1.0 之間)
-        s_behavior = sign * (1.0 - math.exp(-abs(score_act) / 10.0))
+    if not is_new_user and user_persona and cafe_tags:
+        pref_tags = user_persona.get("preferred_tags", [])
+        avoid_tags = user_persona.get("avoid_tags", [])
+        
+        # 🎯 中「喜歡」的標籤加分
+        match_pref = len(set(pref_tags) & set(cafe_tags))
+        s_personal += min(match_pref * 0.5, 1.0)
+        
+        # 💣 中「討厭」的標籤扣分
+        match_avoid = len(set(avoid_tags) & set(cafe_tags))
+        s_personal -= min(match_avoid * 0.5, 1.0)
+        
+        s_personal = max(-1.0, min(1.0, s_personal))
 
     # ---------------------------------------------------------
     # 維度 9: 冷啟動防護
@@ -83,31 +94,18 @@ def calculate_comprehensive_score(
     # ---------------------------------------------------------
     if is_new_user:
         # 新使用者：依賴 AI 語意與客觀評價，不採計行為影響
-        w_vec, w_qual, w_loc, w_beh = 0.50, 0.20, 0.30, 0.00
+        w_vec, w_qual, w_loc, w_pers = 0.50, 0.20, 0.30, 0.00
     else:
         # 老使用者：加入行為偏好權重
-        w_vec, w_qual, w_loc, w_beh = 0.40, 0.15, 0.30, 0.15
+        w_vec, w_qual, w_loc, w_pers = 0.40, 0.15, 0.30, 0.15
 
     # 計算初步總分
     base_score = (w_vec * vec_score) + \
                  (w_qual * score_quality) + \
                  (w_loc * score_location) + \
-                 (w_beh * s_behavior) + \
+                 (w_pers * s_personal) + \
                  p_cold
-                 
-    # ---------------------------------------------------------
-    # 🌟 [究極進化] AI Persona 靈魂加成系統
-    # ---------------------------------------------------------
-    if user_persona and cafe_tags:
-        pref_tags = user_persona.get("preferred_tags", [])
-        avoid_tags = user_persona.get("avoid_tags", [])
-        
-        match_pref = len(set(pref_tags) & set(cafe_tags))
-        base_score += min(match_pref * 0.05, 0.15)
-        
-        match_avoid = len(set(avoid_tags) & set(cafe_tags))
-        base_score -= (match_avoid * 0.15)
-
+   
     # ---------------------------------------------------------
     # 🌟 隱性特徵懲罰 (劇本二)
     # ---------------------------------------------------------
@@ -124,10 +122,28 @@ def calculate_comprehensive_score(
         penalty = 0.5  
 
     final_score = base_score * penalty
+    final_raw = max(0.0, min(1.0, final_score))
 
-    # 確保最終分數落在 0.0 ~ 1.0 之間
-    return max(0.0, min(1.0, final_score))
+    # ✨ 3. 將分數轉化為 100 分制，並計算細項字串給 Log 用
+    ui_score = round(final_raw * 100)
 
+    # 將各權重與實際得分轉為百分比 (四捨五入)
+    pt_vec = round(w_vec * vec_score * 100)
+    pt_qual = round(w_qual * score_quality * 100)
+    pt_loc = round(w_loc * score_location * 100)
+    pt_pers = round(w_pers * s_personal * 100)
+    
+    w_vec_100, w_qual_100, w_loc_100, w_pers_100 = round(w_vec*100), round(w_qual*100), round(w_loc*100), round(w_pers*100)
+
+    details_str = f"意圖符合 {pt_vec}/{w_vec_100}, 評價營業 {pt_qual}/{w_qual_100}, 距離 {pt_loc}/{w_loc_100}, 個人偏好 {pt_pers}/{w_pers_100}"
+    if penalty < 1.0: details_str += f", 冷卻懲罰 x{penalty}"
+
+    # ✨ 改為回傳 dict
+    return {
+        "raw_score": final_raw,
+        "ui_score": ui_score,
+        "details_str": details_str
+    }
 
 # =====================================================================
 # 🌟 [新增] 推薦引擎專用的算分輔助模組 (從 recommend_service 抽離)
@@ -229,17 +245,21 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
             if set(rejected_tags) & set(cafe_tags): has_disliked_features = True
 
         # 6. 分流算分：判斷是「指定店名」還是「AI 推薦」
+        shop_name = item.get("final_name", "未知店家")
+
         if item.get('match_type') == 'name':
             
             # 如果因為特殊要求 (如找半夜) 發動了免死金牌，或者目前有營業，給予營業加分
             open_bonus = 500.0 if hours_until_close > 0 else 0.0 
-            
-            item['search_score'] = 1000.0 - (dist_meters / 10.0) + open_bonus
+            item['search_score'] = 1000.0 - (dist_meters / 10.0) + open_bonus + 1000.0
+            item['ui_score'] = 100 # 指定店名直接給 100 分
+
+            item['score_details'] = "精準店名搜尋直接滿分"
             
         else:
             # 🧠 正常 AI 推薦漏斗 (Path A / B 專屬)：
             # 乖乖跑 8 維度綜合評估大腦
-            item['search_score'] = calculate_comprehensive_score(
+            score_data = calculate_comprehensive_score(
                 vec_score=item.get('vector_score', 0.8),
                 rating=item.get('rating', 0) or 0,
                 total_reviews=item.get('total_ratings', 0),
@@ -251,14 +271,25 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
                 has_disliked_features=has_disliked_features,
                 user_persona=user_persona, # ✨ 傳入 Persona
                 cafe_tags=cafe_tags        # ✨ 傳入 Tags
-            )        
-        
-        # 👑 特權：精準店名搜尋，給予超級加分確保排在第一，但依然會被營業時間扣分！
-        if item.get('match_type') == 'name':
-            item['search_score'] += 1000.0
+            )
+            item['search_score'] = score_data['raw_score']
+            item['ui_score'] = score_data['ui_score']
+
+            item['score_details'] = score_data['details_str']
             
         scored_data.append(item)
         
     # 統一依照算好的分數 (search_score) 由高到低排序，並只切出前 10 名出菜！
     scored_data.sort(key=lambda x: x.get('search_score', 0), reverse=True)
-    return scored_data[:10]
+    top_10_cafes = scored_data[:10]
+
+    # 只印出最終出菜的前 10 名榜單給團隊看
+    logger.info("============== 🏆 最終推薦榜單 ==============")
+    for rank, cafe in enumerate(top_10_cafes, 1):
+        name = cafe.get("final_name", "未知店家")
+        score = cafe.get("ui_score", 0)
+        details = cafe.get("score_details", "")
+        logger.info(f"Top {rank} | ☕ {name} | 總分: {score} ({details})")
+    logger.info("=============================================")
+
+    return top_10_cafes

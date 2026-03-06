@@ -544,7 +544,8 @@ class RecommendService:
                     # 🔥 [組員新增] 將 opening_hours 傳遞給前端 UI 判斷綠色營業中
                     "opening_hours": r.get("opening_hours", {}),
                     "contact": r.get("contact", {}) ,
-                    "custom_reason": custom_reason # ✨ 把 AI 寫好的這句話傳給前端
+                    "custom_reason": custom_reason , # ✨ 把 AI 寫好的這句話傳給前端
+                    "ui_score": r.get("ui_score", 0) # ✨ 新增：把總分裝進去準備送給 LINE Bot
                 })
             return {
                 "data": formatted_response,
