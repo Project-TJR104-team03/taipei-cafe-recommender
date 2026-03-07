@@ -1,0 +1,51 @@
+name: Deploy ai interaction (job)
+
+on:
+  push:
+    branches:
+      - main # 當 push 到 main 分支時觸發
+
+env:
+  PROJECT_ID: project-tjr104-cafe
+  REGION: asia-east1
+  GAR_LOCATION: asia-east1
+  REPOSITORY: cafe-apps
+  IMAGE_NAME: ai-simulator-job
+  JOB_NAME: ai-stress-test-job # Cloud Run Job 的名稱
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Google Auth
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY }}'
+
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v2'
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker asia-east1-docker.pkg.dev --quiet
+
+      - name: Build and Push
+        run: |
+          # 🌟 修正：統一使用 env.REPOSITORY 和 env.IMAGE_NAME
+          DOCKER_TAG="asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          # 注意：確保你的 Dockerfile 是放在 ./4.ai_interaction_log 目錄下
+          docker build -t $DOCKER_TAG ./4.ai_interaction_log
+          docker push $DOCKER_TAG
+
+      - name: Deploy Cloud Run Job
+        run: |
+          # 🌟 修正：使用 env.JOB_NAME，並補上環境變數注入
+          gcloud run jobs deploy ${{ env.JOB_NAME }} \
+            --image asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --task-timeout 3600s \
+            --max-retries 0 \
+            --memory 2Gi \
+            --set-env-vars GCP_PROJECT_ID=${{ env.PROJECT_ID }},SEARCH_API_URL=${{ secrets.SEARCH_API_URL }},MONGO_URL=${{ secrets.MONGO_URL }}
