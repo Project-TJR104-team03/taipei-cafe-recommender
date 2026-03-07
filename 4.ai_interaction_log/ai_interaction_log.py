@@ -312,11 +312,11 @@ def evaluate_recommendation(persona, cafe_data, rank):
         
         return {
             "decision": final_decision, # 這裡現在只會出現 PASS, REJECT, KEEP, ERROR
-            "semantic_score": result.get("semantic_score", 0),
-            "review_score": result.get("review_score", 0),
-            "distance_score": result.get("distance_score", 0),
-            "time_score": result.get("time_score", 0),
-            "total_score": result.get("total_score", 0),
+            "semantic_score": round(float(result.get("semantic_score", 0))),
+            "review_score": round(float(result.get("review_score", 0))),
+            "distance_score": round(float(result.get("distance_score", 0))),
+            "time_score": round(float(result.get("time_score", 0))),
+            "total_score": round(float(result.get("total_score", 0))),
             "reason": result.get("reason", "解析成功但無原因"),
             "user_lat": p_lat,     # 順便把座標打包回傳，讓主程式不用再算一次
             "user_lng": p_lng,
