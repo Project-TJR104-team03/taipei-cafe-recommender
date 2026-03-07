@@ -314,7 +314,6 @@ def evaluate_recommendation(persona, cafe_data, rank):
             final_decision = str(raw_decision_val).strip().upper()
             if final_decision not in ["YES", "NO", "KEEP"]:
                 final_decision = "Fail" # 只有在 AI 真的亂講話 (例如回傳 "MAYBE") 時，才退回到 KEEP
-        
         return {
             "decision": final_decision.upper(), # 🌟 使用清洗過的值，並確保全大寫 (YES/NO/KEEP/FAIL)
             "semantic_score": result.get("semantic_score", 0),
@@ -398,6 +397,9 @@ def save_to_bigquery(data_batch):
         # 2. 設定寫入規則 (LoadJobConfig)
         job_config = bigquery.LoadJobConfig(
             autodetect=True, # 🌟 神奇魔法：讓 BQ 自動根據你的 JSON 決定是字串、整數還是浮點數
+            schema=[
+                bigquery.SchemaField("decision", "STRING") 
+            ],
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND, # 附加在現有資料後面
             schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION] # 允許未來動態新增欄位
         )
