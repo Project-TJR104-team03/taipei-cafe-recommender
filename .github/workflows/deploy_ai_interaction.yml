@@ -41,11 +41,10 @@ jobs:
 
       - name: Deploy Cloud Run Job
         run: |
-          # 🌟 修正：使用 env.JOB_NAME，並補上環境變數注入
           gcloud run jobs deploy ${{ env.JOB_NAME }} \
             --image asia-east1-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${{ github.sha }} \
             --region ${{ env.REGION }} \
             --task-timeout 3600s \
             --max-retries 0 \
-            --memory 2Gi \
-            --set-env-vars GCP_PROJECT_ID=${{ env.PROJECT_ID }},SEARCH_API_URL=${{ secrets.SEARCH_API_URL }},MONGO_URL=${{ secrets.MONGO_URL }}
+            --memory 2Gi
+            
