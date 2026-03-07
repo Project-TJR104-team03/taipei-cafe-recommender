@@ -333,7 +333,8 @@ def single_search_cycle():
     if not persona: return []
 
     persona["user_id"] = str(uuid.uuid4())
-    search_id = str(uuid.uuid4())[:8]
+    search_id = f"S-{str(uuid.uuid4())[:8]}"
+
     request_time = datetime.now(TPE_TZ).strftime('%Y-%m-%d %H:%M:%S')
     start_time = time.time()
     
