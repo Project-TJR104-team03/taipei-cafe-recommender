@@ -15,6 +15,7 @@ from google.cloud import storage
 import pymongo
 import math
 from dotenv import load_dotenv
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 load_dotenv()
 
@@ -27,8 +28,9 @@ MONGO_DB_NAME = os.getenv("MONGO_DB_NAME","coffee_db")
 
 BQ_TABLE_ID = os.getenv("BQ_TABLE_ID", f"{PROJECT_ID}.coffee_recommender.ai_interaction_logs")
 
-vertexai.init(project=PROJECT_ID, location=LOCATION)
-model = GenerativeModel("gemini-2.5-pro")
+VERTEX_AI_REGION = "us-central1" 
+vertexai.init(project=PROJECT_ID, location=VERTEX_AI_REGION)
+model = GenerativeModel("gemini-2.5-flash-lite")
 
 # 設定台北時區
 TPE_TZ = pytz.timezone('Asia/Taipei')
@@ -87,6 +89,20 @@ def format_opening_hours(opening_hours_data):
 
     return " | ".join(formatted_hours)
 
+# 🌟 定義一個 Callback 函數：當重試達上限依然失敗時，執行這個函數來收尾
+def handle_persona_failure(retry_state):
+    print(f"❌ Persona 生成徹底失敗 (已達最大重試次數 {retry_state.attempt_number} 次): {retry_state.outcome.exception()}")
+    return None
+
+# 🌟 加上 Tenacity 重試裝飾器
+# stop_after_attempt(4): 最多嘗試 4 次
+# wait_exponential(multiplier=2, min=2, max=15): 失敗後等待 2秒 -> 4秒 -> 8秒 (最高等 15 秒)
+@retry(
+    stop=stop_after_attempt(4), 
+    wait=wait_exponential(multiplier=2, min=2, max=15),
+    retry_error_callback=handle_persona_failure
+)
+
 def generate_ai_persona():
         """生成虛擬使用者與查詢情境 (省略部分 Prompt 以保持簡潔，與上次相同)"""
         prompt = """
@@ -128,13 +144,29 @@ def generate_ai_persona():
         - liked_tags: [陣列]
         - disliked_tags: [陣列]
         """
-        try:
-            response = model.generate_content(prompt)
-            clean_text = response.text.replace("```json", "").replace("```", "").strip()
-            return json.loads(clean_text)
-        except Exception as e:
-            print(f"Persona 生成失敗: {e}")
-            return None
+
+        response = model.generate_content(prompt)
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_text)
+
+
+def handle_eval_failure(retry_state):
+    print(f"❌ AI 評估徹底失敗 (已達最大重試次數): {retry_state.outcome.exception()}")
+    # 回傳預設的失敗資料結構，避免 BigQuery Schema Drift
+    return {
+        "decision": "FAIL",
+        "semantic_score": 0, "review_score": 0, "distance_score": 0, "time_score": 0, "total_score": 0,
+        "reason": f"API 超載或解析失敗",
+        "user_lat": 0.0, "user_lng": 0.0, "cafe_lat": 0.0, "cafe_lng": 0.0,
+        "api_dist": 0.0, "actual_dist": 0.0
+    }
+
+# 🌟 新增：加上 Tenacity 重試裝飾器 (最多試 3 次)
+@retry(
+    stop=stop_after_attempt(3), 
+    wait=wait_exponential(multiplier=1.5, min=2, max=10),
+    retry_error_callback=handle_eval_failure
+)
 
 def evaluate_recommendation(persona, cafe_data, rank):
         """🌟 結合 MongoDB 真實資料進行深度評分 (附帶 Debug 探測)"""
@@ -266,53 +298,38 @@ def evaluate_recommendation(persona, cafe_data, rank):
         }}
         """
         
-        try:
-            response = model.generate_content(prompt)
-            clean_text = response.text.replace("```json", "").replace("```", "").strip()
-            result = json.loads(clean_text)
+        response = model.generate_content(prompt)
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        result = json.loads(clean_text)
 
-            raw_decision_val = result.get("decision", "KEEP")
-            
-            # 1. 處理布林值 (True/False) 或字串的 "TRUE"/"FALSE"
-            if raw_decision_val is True or str(raw_decision_val).strip().upper() == "TRUE":
-                final_decision = "YES"
-            elif raw_decision_val is False or str(raw_decision_val).strip().upper() == "FALSE":
-                final_decision = "NO"
-            else:
-                # 2. 處理標準字串，並做終極防呆
-                final_decision = str(raw_decision_val).strip().upper()
-                if final_decision not in ["YES", "NO", "KEEP"]:
-                    final_decision = "Fail" # 只有在 AI 真的亂講話 (例如回傳 "MAYBE") 時，才退回到 KEEP
-            
-            return {
-                "decision": final_decision.upper(), # 🌟 使用清洗過的值，並確保全大寫 (YES/NO/KEEP/FAIL)
-                "semantic_score": result.get("semantic_score", 0),
-                "review_score": result.get("review_score", 0),
-                "distance_score": result.get("distance_score", 0),
-                "time_score": result.get("time_score", 0),
-                "total_score": result.get("total_score", 0),
-                "reason": result.get("reason", "解析成功但無原因"),
-                "user_lat": p_lat,     # 順便把座標打包回傳，讓主程式不用再算一次
-                "user_lng": p_lng,
-                "cafe_lat": cafe_lat,
-                "cafe_lng": cafe_lng,
-                "api_dist": api_distance_km,
-                "actual_dist": actual_distance
-            }
-        except Exception as e:
-            print(f"評估解析失敗: {e}")
-            return {
-                "decision": "FAIL",  # 🌟 修正：對齊錯誤標籤
-                "semantic_score": 0, # 🌟 修正：補上四維度分數，避免 BQ Schema 錯誤
-                "review_score": 0,
-                "distance_score": 0,
-                "time_score": 0,
-                "total_score": 0,
-                "reason": f"AI 評估格式錯誤: {str(e)}", 
-                "user_lat": p_lat, "user_lng": p_lng, 
-                "cafe_lat": cafe_lat, "cafe_lng": cafe_lng,
-                "api_dist": api_distance_km, "actual_dist": actual_distance
-            }
+        raw_decision_val = result.get("decision", "KEEP")
+        
+        # 1. 處理布林值 (True/False) 或字串的 "TRUE"/"FALSE"
+        if raw_decision_val is True or str(raw_decision_val).strip().upper() == "TRUE":
+            final_decision = "YES"
+        elif raw_decision_val is False or str(raw_decision_val).strip().upper() == "FALSE":
+            final_decision = "NO"
+        else:
+            # 2. 處理標準字串，並做終極防呆
+            final_decision = str(raw_decision_val).strip().upper()
+            if final_decision not in ["YES", "NO", "KEEP"]:
+                final_decision = "Fail" # 只有在 AI 真的亂講話 (例如回傳 "MAYBE") 時，才退回到 KEEP
+        
+        return {
+            "decision": final_decision.upper(), # 🌟 使用清洗過的值，並確保全大寫 (YES/NO/KEEP/FAIL)
+            "semantic_score": result.get("semantic_score", 0),
+            "review_score": result.get("review_score", 0),
+            "distance_score": result.get("distance_score", 0),
+            "time_score": result.get("time_score", 0),
+            "total_score": result.get("total_score", 0),
+            "reason": result.get("reason", "解析成功但無原因"),
+            "user_lat": p_lat,     # 順便把座標打包回傳，讓主程式不用再算一次
+            "user_lng": p_lng,
+            "cafe_lat": cafe_lat,
+            "cafe_lng": cafe_lng,
+            "api_dist": api_distance_km,
+            "actual_dist": actual_distance
+        }
 
 
 def single_search_cycle():
