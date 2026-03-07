@@ -104,46 +104,40 @@ def handle_persona_failure(retry_state):
 )
 
 def generate_ai_persona():
-        """生成虛擬使用者與查詢情境 (省略部分 Prompt 以保持簡潔，與上次相同)"""
+        """生成虛擬使用者與查詢情境 (族群輪廓 x 對話情境 的矩陣組合)"""
         prompt = """
-        請隨機生成一個在台北找咖啡廳的使用者 Persona。回傳純 JSON 格式，不含 Markdown。
-        欄位要求：
-        - user_id: 隨機產生的 UUID 字串
-        - role: 情境，此情境需要多樣化，可以參考以下範例
-                情境一 (劇本C：全新搜尋)
-                - 使用者：「幫我找半夜有開的安靜咖啡廳」
-                
-                情境二 (劇本A：追加條件)
-                - 使用者：「在中山站、工作友善的咖啡廳哩，但晚上8點營業的」
-                
-                情境三 (劇本E：純閒聊)
-                - 使用者：「今天天氣好差心情不好」
-                
-                情境四 (劇本D：跨日反問)
-                - 使用者：「這禮拜天營業、有賣甜點的店嗎」
-                
-                情境五 (劇本B：地點替換)
-                - 使用者：「我現在在中山站，想找松山附近適合念書的」
-                
-                情境六 (劇本C：精準店名直達車)
-                - 使用者：「是店名 dine in cafe」 或 「找 always day one」
-                
-                情境七 (隱藏技：中間點定位)
-                - 使用者：「想找北車跟中山中間的店」
-                
-                情境八 (保留地點的連鎖店/店名搜尋)
-                - 使用者：「找比較安靜、靠近東門站的星巴克」
-                
-                情境九 (豁免條款：將店名當作比喻或氛圍參考)
-                - 使用者：「要找跟星巴克氛圍一樣的，可以坐很久」
+    請隨機生成一個在台北找咖啡廳的使用者 Persona。回傳純 JSON 格式，不含 Markdown。
+    
+    為了增加壓力測試資料的多樣性，請你先隨機挑選一個「族群輪廓」，再隨機挑選一個「對話情境」，並將兩者結合來產生使用者的真實發言 (query)。
 
-                情境十 (請你再多想想其他可能性)
+    【族群輪廓池】(請隨機選一，這會決定該角色的 liked_tags 與 disliked_tags)：
+    1. 數位遊牧族 (Digital Nomad)：核心需求「插座、Wi-Fi、不限時、安靜」。對咖啡好不好喝可能還好，但絕對不能沒有網路。
+    2. IG 網美/探店達人：核心需求「採光好、裝潢美、有特色甜點 (如布丁、肉桂捲)、好拍照」。
+    3. 寵物狂熱者：只關心「能不能帶毛小孩、有沒有店貓店狗」。
+    4. 咖啡重度成癮者 (Coffee Snob)：關鍵字會是「手沖、淺焙、自家烘焙、藝伎、SOE」。
+    5. 約會/聚餐客：需要「氣氛好、好聊天、有鹹食、最好能訂位」。
+    
+    【對話劇本池】(請隨機選一，這會決定 query 的複雜度與句型)：
+    1. 全新搜尋：直接給出符合自己族群的具體需求（例：「幫我找半夜有開的安靜咖啡廳」）。
+    2. 追加條件：基於某個地點，加上更嚴苛的限制（例：「在中山站、工作友善的咖啡廳裡，但晚上8點還要營業的」）。
+    3. 純閒聊 / 模糊情境：表達心情、天氣或狀態，沒有具體硬體條件（例：「今天天氣好差心情不好，想找個地方躲雨喝杯熱的」）。
+    4. 跨日反問：詢問特定日期或未來的狀態（例：「這禮拜天有營業、有賣特色甜點的店嗎？」）。
+    5. 地點替換：表達現在的位置，但想換去另一個區域（例：「我現在在中山站，但想找松山附近適合看書的」）。
+    6. 精準店名直達車：直接點名尋找某家特定店名，可加上族群口吻（例：「那家叫 dine in cafe 的店有提供插座嗎？」）。
+    7. 中間點定位：尋找兩個地點中間的店（例：「想找北車跟中山中間，適合約會聊天的店」）。
+    8. 保留地點的連鎖店/店名搜尋：尋找特定區域的知名品牌（例：「找比較安靜、靠近東門站的星巴克」）。
+    9. 豁免條款：把知名店名當作形容詞來找店（例：「要找跟星巴克氛圍一樣的，可以坐很久用電腦的」）。
+    10. 刁鑽邊界型：極端時間 + 極端條件，測試系統極限（例：「半夜三點，大安區，要能帶黃金獵犬進去的店」）。
+    11. 惡意/無關型：與咖啡廳完全無關，測試系統防呆（例：「請推薦我台北好吃的滷肉飯」或「哪裡有修車廠」）。
                 
-        - location: 台北市隨機座標 [longitude, latitude]
-        - query: 對 LINE Bot 說的話
-        - liked_tags: [陣列]
-        - disliked_tags: [陣列]
-        """
+    欄位要求 (回傳純 JSON)：
+    - user_id: 隨機產生的 UUID 字串
+    - role: 請用一句話標示這次的組合，格式為「[族群名稱] x [劇本名稱]」，例如 例如 "數位遊牧族 x 追加條件" 或 "約會客 x 跨日反問"
+    - location: 台北市隨機座標 [longitude, latitude] (經度大約 121.5, 緯度大約 25.0)
+    - query: 對 LINE Bot 說出的真實發言 (務必將抽中的族群特性與劇本情境自然融合！)
+    - liked_tags: [陣列] (根據抽中的族群，列出 2~4 個關鍵字，例：["插座", "不限時"])
+    - disliked_tags: [陣列] (根據抽中的族群，列出 1~3 個絕對不想踩雷的標籤，例網美討厭 "燈光昏暗"、遊牧族討厭 "限時")
+    """
 
         response = model.generate_content(prompt)
         clean_text = response.text.replace("```json", "").replace("```", "").strip()
@@ -277,14 +271,15 @@ def evaluate_recommendation(persona, cafe_data, rank):
            - 若距離打烊時間不到 3 小時，按比例遞減 (例如剩 1 小時給 40 分)。
            - 若判斷抵達時已打烊，或店家當日公休 -> 直接給 0 分。
            - 若店家缺乏營業時間資料 -> 給予 60 分的中立分數。
+           - 如果使用者query有指定時間，則應以該時間去做比照，若無就以現在為主
 
         總分 (Total Score) 計算公式：
         Total = (語意擬合 * 0.4) + (標籤評論 * 0.3) + (距離 * 0.2) + (營業時間 * 0.1)
            
-        判斷規則 (Decision)：
+        🌟 判斷規則 (Decision)：
         1. 總分 >= 80，且沒有踩到 disliked_tags，且未打烊 -> "YES"
-        2. 總分 >= 60，但距離稍遠或營業時間偏緊湊 -> "KEEP"
-        3. 總分 < 60，或已打烊，或完全踩雷 -> "NO"
+        2. 總分 >= 80，但推薦店家命中 disliked_tags -> "KEEP"
+        3. 總分 < 80，或已打烊，或完全踩雷 -> "NO"
         
         請以純 JSON 格式回傳 (嚴格遵守格式，不含 ```json 標記)：
         {{
@@ -294,7 +289,7 @@ def evaluate_recommendation(persona, cafe_data, rank):
             "time_score": 95,
             "total_score": 90,
             "decision": "YES" | "NO" | "KEEP",
-            "reason": "請用一句話總結：(1)語意/標籤契合度 (2)距離合理性 (3)營業時間是否充裕"
+            "reason": "請用一句話總結：(1)語意/標籤契合度 (2)距離合理性 (3)是否有踩到 disliked_tags"
         }}
         """
         
@@ -303,19 +298,20 @@ def evaluate_recommendation(persona, cafe_data, rank):
         result = json.loads(clean_text)
 
         raw_decision_val = result.get("decision", "KEEP")
+        raw_str = str(raw_decision_val).strip().upper()
         
-        # 1. 處理布林值 (True/False) 或字串的 "TRUE"/"FALSE"
-        if raw_decision_val is True or str(raw_decision_val).strip().upper() == "TRUE":
-            final_decision = "YES"
-        elif raw_decision_val is False or str(raw_decision_val).strip().upper() == "FALSE":
-            final_decision = "NO"
+        # 🌟 神級替換：把 YES/NO 換成 PASS/REJECT，徹底避開 BigQuery 的布林值地雷！
+        if raw_decision_val is True or raw_str in ["TRUE", "YES"]:
+            final_decision = "PASS"   # 代表推薦成功
+        elif raw_decision_val is False or raw_str in ["FALSE", "NO"]:
+            final_decision = "REJECT" # 代表推薦失敗
+        elif raw_str == "KEEP":
+            final_decision = "KEEP"   # 代表保留
         else:
-            # 2. 處理標準字串，並做終極防呆
-            final_decision = str(raw_decision_val).strip().upper()
-            if final_decision not in ["YES", "NO", "KEEP"]:
-                final_decision = "Fail" # 只有在 AI 真的亂講話 (例如回傳 "MAYBE") 時，才退回到 KEEP
+            final_decision = "ERROR"  # 把原本的 Fail 改為 ERROR，更符合資料庫標準
+        
         return {
-            "decision": final_decision.upper(), # 🌟 使用清洗過的值，並確保全大寫 (YES/NO/KEEP/FAIL)
+            "decision": final_decision, # 這裡現在只會出現 PASS, REJECT, KEEP, ERROR
             "semantic_score": result.get("semantic_score", 0),
             "review_score": result.get("review_score", 0),
             "distance_score": result.get("distance_score", 0),
@@ -396,10 +392,7 @@ def save_to_bigquery(data_batch):
         
         # 2. 設定寫入規則 (LoadJobConfig)
         job_config = bigquery.LoadJobConfig(
-            autodetect=True, # 🌟 神奇魔法：讓 BQ 自動根據你的 JSON 決定是字串、整數還是浮點數
-            schema=[
-                bigquery.SchemaField("decision", "STRING") 
-            ],
+            autodetect=True, # 🌟 神奇魔法：讓 BQ 自動根據你的 JSON 決定是字串、整數還是浮點數  
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND, # 附加在現有資料後面
             schema_update_options=[bigquery.SchemaUpdateOption.ALLOW_FIELD_ADDITION] # 允許未來動態新增欄位
         )
