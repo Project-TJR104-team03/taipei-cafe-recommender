@@ -243,7 +243,7 @@ class RecommendService:
                 path_c_results = list(db['cafes'].aggregate(pipeline_c))
                 open_results = filter_by_opening_hours(path_c_results)
                 
-                final_data = open_results[:10]
+                final_data = open_results[:3]
                 logger.info(f"🏆 情境直達車篩選完成，選出 {len(final_data)} 家神店。")
 
             # === 店名精準直達車 (當使用者輸入特定店名時觸發) ===
@@ -434,7 +434,7 @@ class RecommendService:
                     final_candidates = filter_by_opening_hours(base_candidates)
 
             # 🌟🌟🌟 === 終極交接：呼叫外部的統一算分漏斗 === 🌟🌟🌟
-            if not theme: # 🛡️ 防護罩 4：情境搜尋已經自己排好前10名，不需要過這個漏斗！
+            if not theme: # 🛡️ 防護罩 4：情境搜尋已經自己排好前3名，不需要過這個漏斗！
                 # ✨ 1. 喚醒冷卻機制：撈取過去 24 小時推薦過的店家
                 recommend_history = {}
                 if user_id:
