@@ -348,7 +348,7 @@ def show_user_list(reply_token, user_id, list_type):
         return
 
     bubbles = []
-    for cafe in cafes[:10]: # 最多顯示 10 筆
+    for cafe in cafes[:3]: # 最多顯示 3 筆
         shop_name = cafe.get("final_name", "未知店家")
         original_name = cafe.get("original_name", shop_name)
         place_id = cafe.get('place_id', '')
