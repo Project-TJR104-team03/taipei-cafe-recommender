@@ -313,13 +313,13 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
             
         scored_data.append(item)
         
-    # 統一依照算好的分數 (search_score) 由高到低排序，並只切出前 10 名出菜！
+    # 統一依照算好的分數 (search_score) 由高到低排序，並只切出前 3 名出菜！
     scored_data.sort(key=lambda x: x.get('search_score', 0), reverse=True)
-    top_10_cafes = scored_data[:10]
+    top_3_cafes = scored_data[:3]
 
     # 🌟 終極版 One-Line-Per-Category 極簡 Log
-    logger.info("============== 🏆 最終推薦榜單 (前 10 名) ==============")
-    for rank, cafe in enumerate(top_10_cafes, 1):
+    logger.info("============== 🏆 最終推薦榜單 (前 3 名) ==============")
+    for rank, cafe in enumerate(top_3_cafes, 1):
         name = cafe.get("final_name", "未知店家")
         score = cafe.get("ui_score", 0)
         d = cafe.get("score_details_dict", {})
@@ -353,4 +353,4 @@ def process_and_score_cafes(candidates: list, user_loc: tuple, user_id: str, rej
         logger.info(f" ┗ 🛡️ 調整機制     │ 冷啟動: +{d.get('p_cold',0)}, 隱性地雷: {'觸發(x0.8)' if d.get('has_disliked_features') else '無'}, 冷卻期: {pen_str}")
     logger.info("-------------------------------------------------------------")
 
-    return top_10_cafes
+    return top_3_cafes
